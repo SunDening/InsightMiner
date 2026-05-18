@@ -1,0 +1,4 @@
+__pycache__/
+*.log
+chroma_db/
+.kb_summaries.json

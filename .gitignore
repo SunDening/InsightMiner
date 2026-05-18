@@ -1,0 +1,4 @@
+# Ignore everything at root level
+/*
+!.gitignore
+!RAG/
