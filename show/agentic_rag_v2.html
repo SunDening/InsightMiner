@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agentic RAG v2 — 航天测控智能问答系统 设计文档</title>
+<style>
+  :root {
+    --bg: #0b1120; --surface: #111827; --surface2: #1a2332; --border: #1e3a5f;
+    --text: #e2e8f0; --text2: #94a3b8; --accent: #38bdf8; --accent2: #818cf8;
+    --green: #4ade80; --orange: #fb923c; --red: #f87171; --yellow: #facc15;
+    --pink: #f472b6; --code-bg: #0f172a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px 24px; }
+  .hero {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    border-bottom: 1px solid var(--border); padding: 60px 0 48px; text-align: center;
+  }
+  .hero h1 {
+    font-size: 2.5rem; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 12px;
+  }
+  .hero .subtitle { color: var(--text2); font-size: 1.1rem; }
+  .hero .meta {
+    margin-top: 20px; display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;
+  }
+  .hero .meta span {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 14px; font-size: 0.85rem; color: var(--text2);
+  }
+  section { margin: 48px 0; }
+  h2 {
+    font-size: 1.6rem; font-weight: 600; margin-bottom: 20px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--border); color: var(--accent);
+  }
+  h3 { font-size: 1.15rem; font-weight: 600; margin: 24px 0 10px; color: var(--text); }
+  p, li { color: var(--text2); margin-bottom: 8px; }
+  ul, ol { padding-left: 24px; margin-bottom: 12px; }
+  .card-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px; margin: 16px 0;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px;
+  }
+  .card h4 { font-size: 1rem; margin-bottom: 8px; color: var(--accent); }
+  .card .tag {
+    display: inline-block; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px;
+    margin-right: 6px; background: var(--surface2); border: 1px solid var(--border);
+  }
+  .tag.sql { color: var(--green); border-color: var(--green); }
+  .tag.chat { color: var(--accent); border-color: var(--accent); }
+  .tag.kb { color: var(--orange); border-color: var(--orange); }
+  .tag.web { color: var(--pink); border-color: var(--pink); }
+  .tag.clarify { color: var(--yellow); border-color: var(--yellow); }
+  .arch-diagram {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 28px 20px; overflow-x: auto;
+    font-family: 'Cascadia Code','Fira Code','Consolas',monospace;
+    font-size: 0.82rem; line-height: 1.9; white-space: pre; color: var(--text2);
+  }
+  .arch-diagram .hl { color: var(--accent); } .arch-diagram .hl2 { color: var(--accent2); }
+  .arch-diagram .hlg { color: var(--green); } .arch-diagram .hlo { color: var(--orange); }
+  .arch-diagram .hlp { color: var(--pink); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0;
+    background: var(--surface); border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  th, td { padding: 10px 14px; text-align: left; font-size: 0.9rem; }
+  th { background: var(--surface2); color: var(--accent); font-weight: 600; }
+  td { border-top: 1px solid var(--border); color: var(--text2); }
+  tr:hover td { background: rgba(56, 189, 248, 0.04); }
+  code {
+    background: var(--code-bg); padding: 2px 6px; border-radius: 4px;
+    font-family: 'Cascadia Code','Fira Code','Consolas',monospace;
+    font-size: 0.88em; color: var(--green);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; overflow-x: auto;
+    font-family: 'Cascadia Code','Fira Code','Consolas',monospace;
+    font-size: 0.82rem; line-height: 1.5;
+  }
+  .json-key { color: var(--accent); } .json-str { color: var(--green); }
+  .json-num { color: var(--orange); } .json-comment { color: #546e7a; }
+  .flow-row {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin: 16px 0; font-size: 0.85rem;
+  }
+  .flow-node {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 14px; white-space: nowrap; color: var(--text);
+  }
+  .flow-arrow { color: var(--accent); font-size: 1.2rem; }
+  footer {
+    border-top: 1px solid var(--border); padding: 24px 0; text-align: center;
+    color: var(--text2); font-size: 0.85rem;
+  }
+  @media (max-width: 768px) {
+    .hero h1 { font-size: 1.6rem; } .card-grid { grid-template-columns: 1fr; }
+    .arch-diagram { font-size: 0.7rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="container">
+    <h1>Agentic RAG v2</h1>
+    <p class="subtitle">ITU-R 空间网络通知系统（SNS）· 结构化数据库智能问答</p>
+    <div class="meta">
+      <span>RAG/agentic_rag_sql.py</span>
+      <span>~2100 行</span>
+      <span>LangGraph · 固定管线</span>
+      <span>Access .mdb + ChromaDB</span>
+      <span>Ollama / DeepSeek 可切换</span>
+      <span>混合检索: Dense + BM25 + RRF</span>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ═══════════════════════════════════════ 1. OVERVIEW -->
+<section>
+  <h2>1. 系统概述</h2>
+  <p>
+    Agentic RAG v2 是一个面向 <strong>Access .mdb 数据库（ITU-R SNS，64 张表 696 字段）</strong> + <strong>本地知识库</strong> + <strong>网络搜索</strong> 的智能问答系统。
+    采用固定管线架构（非 Tool-Calling），每次 LLM 调用次数可预测。Schema 通过<strong>动态检索</strong>（Dense + BM25 + RRF → CrossEncoder）只注入查询相关的表/列，避免全量 64 表上下文爆炸。
+  </p>
+  <div class="card-grid">
+    <div class="card">
+      <h4>意图路由 + 查询重写</h4>
+      <p>一次 LLM 调用完成分类和重写：<span class="tag chat">chat</span> <span class="tag sql">sql</span> <span class="tag kb">kb</span> <span class="tag web">web</span> <span class="tag clarify">clarify</span>，含对话历史上下文和代词消解</p>
+    </div>
+    <div class="card">
+      <h4>动态 Schema 检索</h4>
+      <p>双层 ChromaDB 索引（表级 + 列级）→ 按查询检索 top-5 表 + 每表 top-5 列 → FK 图自动发现 Join 路径。上下文从 ~6000 token 降至 ~1000 token</p>
+    </div>
+    <div class="card">
+      <h4>多轮记忆</h4>
+      <p>对话历史注入 LLM prompt；从上一轮 answer + rewritten_query 提取实体上下文，SQL 自动继承过滤条件</p>
+    </div>
+    <div class="card">
+      <h4>结构化输出</h4>
+      <p>纯文本 JSON：<code>answer</code> + <code>rewritten_query</code> + <code>data_sources[{source_type, evidence}]</code>，禁止 Markdown</p>
+    </div>
+    <div class="card">
+      <h4>自修正 (Reflection)</h4>
+      <p>SQL 校验拦截重写 · 执行错误重试 (x3) · self_review 评分 1-5，&lt;3 触发重写 (x2)</p>
+    </div>
+    <div class="card">
+      <h4>混合检索 (Dense + BM25 + RRF)</h4>
+      <p>双路并行：语义向量检索 + BM25 关键词检索 → RRF 倒数排名融合 → CrossEncoder 精排 Top-3。KB 文档检索和 Schema 元数据检索共用此管线</p>
+    </div>
+    <div class="card">
+      <h4>动态 KB 描述</h4>
+      <p>启动时 LLM 为每个文档生成摘要，mtime 缓存，文档变更自动更新；摘要注入意图分类 prompt</p>
+    </div>
+    <div class="card">
+      <h4>安全</h4>
+      <p>15 种危险 SQL 黑名单 · Web 搜索需显式授权 · Tavily 闸门 · 结果截断 50 行 · .mdb 连接线程安全</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ 2. ARCHITECTURE -->
+<section>
+  <h2>2. 架构全景</h2>
+  <h3>2.1 启动流程</h3>
+  <div class="flow-row">
+    <span class="flow-node">get_service()</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-node">KB.init() 嵌入+重排序</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-node">KB 摘要+ChromaDB+BM25</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-node">SchemaIndexer.init() 双层索引+FK图</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-node">graph.compile()</span>
+  </div>
+
+  <h3>2.2 LangGraph 节点（10 个，3 条路由）</h3>
+  <table>
+    <tr><th>#</th><th>节点</th><th>LLM</th><th>职责</th></tr>
+    <tr><td>1</td><td><code>classify_intent</code></td><td>✓</td><td>意图分类 + 查询重写（合并为一次调用），注入 64 表名称列表</td></tr>
+    <tr><td>2</td><td><code>chat_respond</code></td><td>✓</td><td>闲聊路径，直接回复</td></tr>
+    <tr><td>3</td><td><code>ask_clarification</code></td><td>✓</td><td>生成反问句引导用户澄清</td></tr>
+    <tr><td>4</td><td><code>build_schema</code></td><td></td><td>动态检索：表级+列级混合检索 → FK 图 Join Path → 组装精简 Schema 文本</td></tr>
+    <tr><td>5</td><td><code>generate_sql</code></td><td>✓</td><td>对话历史 + 上轮上下文 + 动态 Schema + 错误反馈 → Access SQL</td></tr>
+    <tr><td>6</td><td><code>validate_sql</code></td><td></td><td>只读检查 + Access 语法限制，拦截后反馈</td></tr>
+    <tr><td>7</td><td><code>execute_sql</code></td><td></td><td>pyodbc 连接 .mdb 只读执行</td></tr>
+    <tr><td>8</td><td><code>retrieve_kb / tavily_search</code></td><td></td><td>混合检索（语义+BM25→RRF→CrossEncoder）/ Tavily API（含 CrossEncoder 精排）</td></tr>
+    <tr><td>9</td><td><code>synthesize_answer</code></td><td>✓</td><td>统一 JSON 合成</td></tr>
+    <tr><td>10</td><td><code>self_review</code></td><td>✓</td><td>质量自检 1-5 分</td></tr>
+  </table>
+  <p><strong>LLM 调用次数：</strong>SQL 4 次，Chat 2 次，KB/Web 3 次，Clarify 2 次。</p>
+
+  <h3>2.3 路由函数（4 个）</h3>
+  <table>
+    <tr><th>函数</th><th>条件</th><th>跳转</th></tr>
+    <tr><td><code>route_by_intent</code></td><td>intent = chat / sql / kb / web / clarify</td><td>chat_respond / build_schema / retrieve_kb / tavily_search / ask_clarification</td></tr>
+    <tr><td><code>route_after_validate</code></td><td>error_info 空 → 通过；非空 → 拦截</td><td>execute_sql / generate_sql</td></tr>
+    <tr><td><code>route_after_execute</code></td><td>无错误 / 有错误+retry&lt;3 / retry≥3</td><td>synthesize_answer / generate_sql / synthesize_answer</td></tr>
+    <tr><td><code>route_after_review</code></td><td>无 feedback / 有+retry&lt;2 / retry≥2</td><td>END / chat_respond或synthesize_answer / END</td></tr>
+  </table>
+
+  <h3>2.4 整体数据流</h3>
+  <div class="arch-diagram"><span class="hl">用户输入</span>
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│            <span class="hl2">LangGraph Agent (InMemorySaver)</span>             │
+│                                                 │
+│  ┌─────────────┐                                │
+│  │<span class="hlg">classify_intent</span>│ ← LLM 分类 + 重写（合并）       │
+│  └──────┬──────┘                                │
+│         │                                       │
+│    ┌────┴──────────────────────┐                │
+│    │    <span class="hlg">route_by_intent</span>       │                │
+│    └────┬──────────────────────┘                │
+│   ┌─────┼─────┬──────────┬──────────┬──────┐    │
+│   ▼     ▼     ▼          ▼          ▼      ▼    │
+│ <span class="hlo">chat</span>  <span class="hlg">sql</span>   <span class="hlp">kb</span>        <span class="hl">web</span>       <span class="hl2">clarify</span> │
+│   │     │     │          │          │           │
+│   │     ▼     │          │          │           │
+│   │  ┌────┐  │   混合检索(Dense   Tavily搜索      │
+│   │  │sch │  │  Dense+BM25      CrossEncoder    │
+│   │  │ema │  │   →RRF融合→        精排          │
+│   │  │检 │  │     top-10          │           │
+│   │  │索 │  │       │             │           │
+│   │  │(表+│  │       │             │           │
+│   │  │列+F│  │       │             │           │
+│   │  │K图)│  │       │             │           │
+│   │  └──┬─┘  │       │             │           │
+│   │     ▼    │       │             │           │
+│   │  ┌────┐  │       │             │           │
+│   │  │SQL │  │       │             │           │
+│   │  │生成│  │       │             │           │
+│   │  └──┬─┘  │       │             │           │
+│   │     ▼    │       │             │           │
+│   │  ┌────┐  │       │             │           │
+│   │  │校验│  │       │             │           │
+│   │  └──┬─┘  │       │             │           │
+│   │   ╱ ╲   │       │             │           │
+│   │ 通过 拦截│       │             │           │
+│   │  │  (重写)        │             │           │
+│   │  ▼               │             │           │
+│   │ ┌──────┐         │             │           │
+│   │ │SQL执行│        │             │           │
+│   │ │pyodbc│        │             │           │
+│   │ └──┬───┘         │             │           │
+│   │  ╱ ╲            │             │           │
+│   │成功 失败(retry<3) │             │           │
+│   │  │  失败(max)     │             │           │
+│   │  ▼    │          ▼     ▼       ▼           │
+│   │  ┌────┴──────────────┐                      │
+│   │  │<span class="hl2">synthesize_answer</span> │                      │
+│   │  │  统一 JSON 合成    │                      │
+│   │  └────────┬─────────┘                      │
+│   │           ▼                                 │
+│   │  ┌──────────────┐                           │
+│   │  │<span class="hlo"> self_review </span>│                           │
+│   │  │  质量自检 1-5 │                           │
+│   │  └──────┬───────┘                           │
+│   │       ╱ ╲                                   │
+│   │  通过(≥3) 不通过(<3,retry<2)→回写             │
+│   │      │   不通过(max)→强制结束                  │
+│   │      ▼                                       │
+└─────────┬───────────────────────────────────────┘
+          ▼
+    <span class="hlg">纯文本 JSON 回答</span></div>
+</section>
+
+<!-- ═══════════════════════════════════════ 3. INTENT ROUTING -->
+<section>
+  <h2>3. 意图路由详解</h2>
+  <table>
+    <tr><th>意图</th><th>触发条件</th><th>示例</th><th>数据源</th></tr>
+    <tr>
+      <td><span class="tag chat">chat</span></td>
+      <td>问候、闲聊、概念解释（不涉及查询数据库或文档）</td>
+      <td>"你好"、"LEO 轨道是什么意思"</td>
+      <td>LLM 常识</td>
+    </tr>
+    <tr>
+      <td><span class="tag sql">sql</span></td>
+      <td>查询数据库中具体数据、统计、关联分析；含对上一轮结果的追问</td>
+      <td>"列出在役卫星"、"CASC 火箭数"、"它们的编号"</td>
+      <td>Access .mdb (64 表动态检索)</td>
+    </tr>
+    <tr>
+      <td><span class="tag kb">kb</span></td>
+      <td>查询已索引文档中的领域知识</td>
+      <td>"CME-001 的速度"、"秦非子如何建国"</td>
+      <td>ChromaDB (双层索引)</td>
+    </tr>
+    <tr>
+      <td><span class="tag web">web</span></td>
+      <td>用户<strong>显式授权</strong>上网搜索（含"上网查""搜索网络"等短语）</td>
+      <td>"帮我上网查太阳风暴"</td>
+      <td>Tavily Search API</td>
+    </tr>
+    <tr>
+      <td><span class="tag clarify">clarify</span></td>
+      <td>问题过于模糊，且对话历史也无法确定指代</td>
+      <td>"最近情况怎么样"、"那个东西"</td>
+      <td>反问用户澄清</td>
+    </tr>
+  </table>
+  <p>
+    意图分类 prompt 中注入了<strong>对话历史</strong>和<strong>动态 KB 文档摘要</strong>。LLM 先尝试从历史中消解代词——如果上一轮讨论过具体实体，本次追问归为 sql/kb 而非 clarify。
+  </p>
+</section>
+
+<!-- ═══════════════════════════════════════ 4. SQL PIPELINE -->
+<section>
+  <h2>4. SQL 管线详解</h2>
+  <div class="flow-row">
+    <span class="flow-node">build_schema</span><span class="flow-arrow">→</span>
+    <span class="flow-node">generate_sql</span><span class="flow-arrow">→</span>
+    <span class="flow-node">validate_sql</span><span class="flow-arrow">→</span>
+    <span class="flow-node">execute_sql</span><span class="flow-arrow">→</span>
+    <span class="flow-node">synthesize</span><span class="flow-arrow">→</span>
+    <span class="flow-node">self_review</span>
+  </div>
+
+  <h3>4.1 动态 Schema 检索（SchemaIndexer）</h3>
+  <p>从 64 张表 696 字段中按查询动态检索相关子集，核心管线复用 KB 的混合检索：</p>
+  <table>
+    <tr><th>阶段</th><th>方法</th><th>输入</th><th>输出</th></tr>
+    <tr><td>表级检索</td><td>Dense + BM25 → RRF 融合 → CrossEncoder 精排</td><td>用户查询</td><td>Top-5 张表</td></tr>
+    <tr><td>列级检索</td><td>同上（限定已选中的表）</td><td>表名 + 查询</td><td>每表 Top-5 列 + PK/FK</td></tr>
+    <tr><td>FK 图计算</td><td>BFS 最短路径</td><td>选中表集合</td><td>Join 条件列表</td></tr>
+  </table>
+  <p>上下文从全量 ~6000 token 降至动态 ~1000 token，噪音削减 80%+。</p>
+
+  <h3>4.2 SchemaIndexer 架构</h3>
+  <p>双层 ChromaDB 索引 + FK 邻接图：</p>
+  <table>
+    <tr><th>索引</th><th>Collection</th><th>文档格式</th></tr>
+    <tr><td>表级</td><td><code>schema_tables</code></td><td><code>{name} | {description} | {module} | COLUMNS: col1, col2...</code></td></tr>
+    <tr><td>列级</td><td><code>schema_columns</code></td><td><code>{table}.{column} | {type} | {description_zh} | {description_en}</code></td></tr>
+    <tr><td>FK 图</td><td>内存邻接表</td><td><code>table → [(col, target_table, target_col), ...]</code></td></tr>
+  </table>
+  <p>构建时机：启动时从 <code>tmp/schema.json</code> + <code>tmp/table_desc.json</code> 加载，manifest 缓存复用。<br>
+  模型共享：<code>SchemaIndexer</code> 复用 <code>RagKnowledgeBase</code> 已加载的 <code>HuggingFaceEmbeddings</code> + <code>CrossEncoder</code>，不重复加载。</p>
+
+  <h3>4.3 Access SQL 适配</h3>
+  <table>
+    <tr><th>语法项</th><th>MySQL</th><th>Access Jet SQL</th></tr>
+    <tr><td>行数限制</td><td><code>LIMIT 50</code></td><td><code>SELECT TOP 50</code></td></tr>
+    <tr><td>字符串拼接</td><td><code>CONCAT(a, b)</code></td><td><code>a & b</code></td></tr>
+    <tr><td>时间字面量</td><td><code>'2024-01-01'</code></td><td><code>#2024-01-01#</code></td></tr>
+    <tr><td>CTE</td><td><code>WITH ... AS (...)</code></td><td>不支持，用子查询</td></tr>
+    <tr><td>条件表达式</td><td><code>CASE WHEN</code></td><td><code>IIF()</code> 或 <code>SWITCH()</code></td></tr>
+    <tr><td>连接驱动</td><td>SQLAlchemy + pymysql</td><td>pyodbc + Microsoft Access Driver</td></tr>
+  </table>
+
+  <h3>4.4 多轮上下文继承</h3>
+  <p><code>generate_sql_node</code> 从上一轮 JSON 的 <code>answer</code> 和 <code>rewritten_query</code> 中提取实体上下文，注入当前 prompt，告知 LLM 在 SQL 中继承对应过滤条件。</p>
+
+  <h3>4.5 自修正（弱 Reflection）</h3>
+  <table>
+    <tr><th>类型</th><th>触发</th><th>上限</th></tr>
+    <tr><td>SQL 校验拦截</td><td>非 SELECT 语法错误</td><td>不限</td></tr>
+    <tr><td>SQL 执行失败</td><td>Access 返回错误</td><td>MAX_SQL_RETRY=3</td></tr>
+    <tr><td>答案质量不足</td><td>self_review 评分 &lt;3/5</td><td>MAX_REVIEW_RETRY=2</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════ 5. KB + WEB -->
+<section>
+  <h2>5. 知识库 & Web 搜索路径</h2>
+  <div class="card-grid">
+    <div class="card">
+      <h4><span class="tag kb">kb</span> 知识库：混合检索 (Dense + BM25 + RRF)</h4>
+      <ul>
+        <li><strong>索引构建（启动时）</strong>：扫描 <code>RAG/*.txt</code>，全文切块 (512/64) → ChromaDB 向量索引 + BM25Okapi 倒排索引（含中英混合字符 n-gram 分词）；摘要索引保留用于意图分类</li>
+        <li><strong>Path A — 语义检索</strong>：query → all-MiniLM-L6-v2 embedding → ChromaDB chunk 相似度 top-20</li>
+        <li><strong>Path B — 关键词检索</strong>：query → 字符 n-gram 分词 → BM25 倒排索引 top-20</li>
+        <li><strong>RRF 融合</strong>：倒数排名融合 (k=60) 合并两路结果 → top-10 → CrossEncoder 精排 Top-3 入 prompt</li>
+        <li><strong>容错</strong>：单路无结果时另一路结果仍有效；RRF 天然容忍排名差异，无硬过滤单点故障</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="tag web">web</span> Web 搜索</h4>
+      <ul>
+        <li>引擎：<code>TavilySearch(max_results=5)</code></li>
+        <li>结果拆片段 → CrossEncoder 精排 Top-3</li>
+        <li>仅在用户显式授权时启用</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ 6. STATE & JSON -->
+<section>
+  <h2>6. 状态定义 & 结构化输出</h2>
+  <h3>6.1 AgentState（15 个字段）</h3>
+  <table>
+    <tr><th>字段</th><th>Reducer</th><th>用途</th></tr>
+    <tr><td><code>messages</code></td><td><code>add_messages</code></td><td>多轮对话历史</td></tr>
+    <tr><td><code>question</code></td><td>覆盖</td><td>用户原始问题</td></tr>
+    <tr><td><code>rewritten_query</code></td><td>覆盖</td><td>classify 阶段重写后的精炼查询</td></tr>
+    <tr><td><code>intent</code></td><td>覆盖</td><td>chat / sql / kb / web / clarify</td></tr>
+    <tr><td><code>current_time</code></td><td>覆盖</td><td>当前 UTC 时间（注入 LLM prompt）</td></tr>
+    <tr><td><code>schema_context</code></td><td>覆盖</td><td>动态检索的精简 Schema（~1000 token）</td></tr>
+    <tr><td><code>sql</code></td><td>覆盖</td><td>生成的 SQL（内部使用）</td></tr>
+    <tr><td><code>query_result</code></td><td>覆盖</td><td>格式化查询结果</td></tr>
+    <tr><td><code>retry_count</code></td><td>覆盖</td><td>SQL 重试计数</td></tr>
+    <tr><td><code>error_info</code></td><td>覆盖</td><td>SQL 错误/拦截原因</td></tr>
+    <tr><td><code>retrieved_docs</code></td><td>覆盖</td><td>KB 检索结果</td></tr>
+    <tr><td><code>web_results</code></td><td>覆盖</td><td>Tavily 搜索结果</td></tr>
+    <tr><td><code>final_answer</code></td><td>覆盖</td><td>最终 JSON 回答</td></tr>
+    <tr><td><code>review_count</code></td><td>覆盖</td><td>自检重试计数</td></tr>
+    <tr><td><code>review_feedback</code></td><td>覆盖</td><td>自检不合格反馈</td></tr>
+  </table>
+
+  <h3>6.2 JSON 输出 Schema</h3>
+  <pre>{
+  <span class="json-key">"answer"</span>:          <span class="json-str">"对用户问题的纯文本回答（中文，禁止 Markdown）"</span>,
+  <span class="json-key">"rewritten_query"</span>: <span class="json-str">"重写后的精炼查询"</span>,
+  <span class="json-key">"data_sources"</span>: [
+    {
+      <span class="json-key">"source_type"</span>: <span class="json-str">"mysql | knowledge_base | web_search | llm_knowledge"</span>,
+      <span class="json-key">"evidence"</span>:    <span class="json-str">"原始数据：查询结果 / 文档原文 / API 返回 / 模型知识声明"</span>
+    }
+  ]
+}</pre>
+  <p>输出经 <code>_sanitize_text()</code> 强制剥离加粗、斜体、管道符、表格等 Markdown 符号。</p>
+</section>
+
+<!-- ═══════════════════════════════════════ 7. MULTI-TURN -->
+<section>
+  <h2>7. 多轮记忆</h2>
+  <table>
+    <tr><th>层级</th><th>节点</th><th>方式</th></tr>
+    <tr><td>对话历史文本</td><td>classify / generate_sql / chat / synthesize</td><td><code>_format_history()</code> 取最近 6 条消息</td></tr>
+    <tr><td>上轮实体上下文</td><td>generate_sql</td><td>从 AIMessage JSON 中提取 answer + rewritten_query，告知 LLM 指代实体</td></tr>
+    <tr><td>Checkpoint 持久化</td><td>全图</td><td>InMemorySaver 进程内持久化完整状态</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════ 8. CONFIG -->
+<section>
+  <h2>8. 配置与部署</h2>
+  <h3>8.1 启动命令</h3>
+  <pre>uv run python RAG/agentic_rag_sql.py</pre>
+  <p>启动时自动执行：模型预热 → KB 摘要 + 双层索引 → SchemaIndexer 表/列索引 + FK 图 → 就绪。<br>
+  交互命令：<code>quit</code> 退出、<code>clear</code> 清空历史、<code>history</code> 查看历史。</p>
+  <h3>8.2 环境变量</h3>
+  <table>
+    <tr><th>变量</th><th>说明</th><th>默认值</th></tr>
+    <tr><td><code>MDB_PATH</code></td><td>Access .mdb 数据库路径</td><td>C:\Users\Sacr\Documents\test.mdb</td></tr>
+    <tr><td><code>LLM_API_KEY / LLM_BASE_URL / LLM_MODEL_ID</code></td><td>DeepSeek API</td><td>deepseek-v4-pro</td></tr>
+    <tr><td><code>OLLAMA_MODEL</code></td><td>Ollama 模型名</td><td>gemma4:e4b</td></tr>
+    <tr><td><code>TAVILY_API_KEY</code></td><td>Tavily 搜索</td><td>-</td></tr>
+  </table>
+  <h3>8.3 Schema 检索参数</h3>
+  <table>
+    <tr><th>参数</th><th>说明</th><th>默认值</th></tr>
+    <tr><td><code>MAX_SCHEMA_TABLES</code></td><td>每次查询检索的最大表数</td><td>5</td></tr>
+    <tr><td><code>MAX_SCHEMA_COLUMNS_PER_TABLE</code></td><td>每表检索的最大列数（不含 PK/FK）</td><td>5</td></tr>
+    <tr><td><code>SCHEMA_JSON_PATH</code></td><td>Schema 元数据 JSON</td><td>tmp/schema.json</td></tr>
+    <tr><td><code>TABLE_DESC_JSON_PATH</code></td><td>表含义描述 JSON</td><td>tmp/table_desc.json</td></tr>
+  </table>
+  <h3>8.4 LLM 切换</h3>
+  <pre><span class="json-comment"># 行 128：修改一行即可切换</span>
+<span class="json-key">LLM_PROVIDER</span>: <span class="hl">Literal</span>[<span class="json-str">"deepseek"</span>, <span class="json-str">"ollama"</span>] = <span class="json-str">"ollama"</span></pre>
+  <h3>8.5 离线模式</h3>
+  <p>文件顶部 <code>os.environ.setdefault("HF_HUB_OFFLINE", "1")</code> 在所有 import 之前设置，确保 embedding/reranker 模型零网络请求。首次下载后永久离线。</p>
+  <h3>8.6 日志</h3>
+  <p><code>_TimedBufferingHandler</code> 每 10 秒批量写入 <code>RAG/agentic_rag.log</code>，启动时清空（mode='w'）。</p>
+</section>
+
+<!-- ═══════════════════════════════════════ 9. VERIFICATION -->
+<section>
+  <h2>9. 验证清单</h2>
+  <table>
+    <tr><th>#</th><th>场景</th><th>预期</th><th>状态</th></tr>
+    <tr><td>1</td><td>"Hello"</td><td>intent=chat，纯文本回答</td><td>✅</td></tr>
+    <tr><td>2</td><td>"列出所有GSO卫星"</td><td>intent=sql，动态检索 geo + notice 表，生成 TOP N SQL</td><td>✅</td></tr>
+    <tr><td>3</td><td>"查询 grp_id=12345 的频率指配"→"列出它们的波束参数"</td><td>第二轮 SQL 继承 grp_id 过滤条件，检索 grp + s_beam 表</td><td>✅</td></tr>
+    <tr><td>4</td><td>非 SELECT 语句</td><td>validate 拦截并返回 generate_sql 重写</td><td>✅</td></tr>
+    <tr><td>5</td><td>首版回答质量不足</td><td>self_review 评分 &lt;3，触发重写，二版改善</td><td>✅</td></tr>
+    <tr><td>6</td><td>DROP / INSERT / DELETE</td><td>execute_access_query 拒绝</td><td>✅</td></tr>
+    <tr><td>7</td><td>JSON 字段</td><td>answer、rewritten_query、data_sources 齐全，无 Markdown</td><td>✅</td></tr>
+    <tr><td>8</td><td>"上网查 SNS 最新规范"（显式授权）</td><td>走 web 路径，Tavily 搜索 + CrossEncoder 精排</td><td>✅</td></tr>
+    <tr><td>9</td><td>意图反问</td><td>模糊输入 → clarify → 反问句</td><td>✅</td></tr>
+    <tr><td>10</td><td>Schema 动态检索</td><td>表级+列级 dense+BM25→RRF→CrossEncoder → FK 图 Join Path</td><td>✅</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════ 10. INTELLIGENT AGENT PATTERNS -->
+<section>
+  <h2>10. Agent 范式的当前落位</h2>
+  <table>
+    <tr><th>范式</th><th>实现程度</th><th>说明</th></tr>
+    <tr>
+      <td><strong>Router</strong></td>
+      <td>✅ 完整</td>
+      <td>classify_intent → route_by_intent 实现 5 路分发</td>
+    </tr>
+    <tr>
+      <td><strong>Reflection</strong></td>
+      <td>🟡 弱版</td>
+      <td>self_review 评分 1-5 + 重写，但仅检查答案质量，不验证 SQL 语义正确性</td>
+    </tr>
+    <tr>
+      <td><strong>ReAct</strong></td>
+      <td>❌ 无</td>
+      <td>固定管线，无 Thought→Action→Observation 循环；LLM 不能自主决定追加查询</td>
+    </tr>
+    <tr>
+      <td><strong>Plan-and-Solve</strong></td>
+      <td>❌ 无</td>
+      <td>无计划生成节点；复杂问题用一条 SQL 硬扛，不拆分子任务</td>
+    </tr>
+    <tr>
+      <td><strong>Tool/Function Calling</strong></td>
+      <td>❌ 无</td>
+      <td>图为预编译，不通过 LLM 输出 function call 来调度工具</td>
+    </tr>
+  </table>
+  <p>文件 <code>show/maybe_todo.txt</code> 记录了未来优化方向（Plan-then-Execute、方案 B/C 等）。</p>
+</section>
+
+</div>
+
+<footer>
+  Agentic RAG v2 · ITU-R SNS 空间网络通知智能问答系统 · 代码更新后同步本文档<br>
+  数据库: Access .mdb (64表/696字段) · Schema 检索: 双层 ChromaDB + FK 图 · 日志: <code>RAG/agentic_rag.log</code>（10s 批量写，重启清空）
+</footer>
+
+</body>
+</html>
