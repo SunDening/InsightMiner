@@ -1,4 +1,8 @@
 __pycache__/
 *.log
+hello_*
+rag_*
 chroma_db/
+kb/
+schema_chroma_db/
 .kb_summaries.json
