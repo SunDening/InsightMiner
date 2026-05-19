@@ -1,4 +1,4 @@
-"""Agentic RAG v2 — 面向 MySQL 结构化数据库的智能问答系统（意图路由版）
+"""Agentic RAG v2 — 面向 Access .mdb 结构化数据库的智能问答系统（意图路由版）
 
 公共 API：
   - chat(question, thread_id)   多轮对话入口
@@ -9,7 +9,7 @@
 使用：
   from agentic import chat
 
-  answer = await chat("最近有哪些发射任务？")
+  answer = await chat("列出所有GSO卫星")
 """
 
 import json
@@ -18,18 +18,22 @@ from datetime import datetime, timezone
 
 # ⚠️ config 必须先于所有其他 agentic 模块导入，确保 load_dotenv() 在
 # huggingface_hub / transformers 被任何模块 import 之前设置好离线环境变量
-from .config import logger, KB_DIR, CHROMA_DIR, SUMMARY_CACHE_PATH
+from .config import (
+    logger, KB_DIR, CHROMA_DIR, SUMMARY_CACHE_PATH,
+    SCHEMA_JSON_PATH, TABLE_DESC_JSON_PATH, SCHEMA_CHROMA_DIR,
+)
 
 from langchain.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .knowledge_base import RagKnowledgeBase
+from .schema_indexer import SchemaIndexer
 from .graph_builder import build_agent_graph
 
 
 class RagService:
-    """RAG 服务单例，持有 KB 实例和 LangGraph agent。
+    """RAG 服务单例，持有 KB 实例、SchemaIndexer 和 LangGraph agent。
 
     Usage:
         service = RagService()
@@ -39,11 +43,12 @@ class RagService:
 
     def __init__(self):
         self.kb: RagKnowledgeBase | None = None
+        self.schema_indexer: SchemaIndexer | None = None
         self.agent: CompiledStateGraph | None = None
         self._init_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """惰性初始化：加载模型、构建 KB、编译图。线程安全。"""
+        """惰性初始化：加载模型、构建 KB + Schema 索引、编译图。线程安全。"""
         async with self._init_lock:
             if self.agent is not None:
                 return  # 已初始化
@@ -54,7 +59,18 @@ class RagService:
                 summary_cache_path=SUMMARY_CACHE_PATH,
             )
             await self.kb.initialize()
-            self.agent = build_agent_graph(self.kb)
+
+            # SchemaIndexer 复用 KB 已加载的 embeddings_model 和 reranker_model
+            self.schema_indexer = SchemaIndexer(
+                schema_json_path=SCHEMA_JSON_PATH,
+                table_desc_path=TABLE_DESC_JSON_PATH,
+                chroma_dir=SCHEMA_CHROMA_DIR,
+                embeddings_model=self.kb.embeddings_model,
+                reranker_model=self.kb.reranker_model,
+            )
+            await self.schema_indexer.initialize()
+
+            self.agent = build_agent_graph(self.kb, self.schema_indexer)
             logger.info("[Service] RagService 初始化完成")
 
     async def chat(self, question: str, thread_id: str = "default") -> str:

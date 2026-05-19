@@ -4,10 +4,13 @@
   - 摘要缓存到 .kb_summaries.json，仅对新增/变更文件调 LLM 生成摘要
   - ChromaDB 持久化到 chroma_db/，通过 .manifest.json 检测变更，跳过高成本重建
   - 嵌入模型与重排序模型并发加载 (asyncio.gather + run_in_executor)
+  - 混合检索：语义 (dense) + BM25 (sparse) → RRF 融合 → CrossEncoder 精排
 """
 
 import os
+import re
 import json
+import pickle
 import shutil
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +21,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from sentence_transformers import CrossEncoder
 from langchain.messages import HumanMessage
+from rank_bm25 import BM25Okapi
 
 from .config import (
     logger, KB_DIR, CHROMA_DIR, SUMMARY_CACHE_PATH,
@@ -78,6 +82,15 @@ class RagKnowledgeBase:
         # 摘要缓存
         self.descriptions: dict[str, str] = {}
         self.file_mtimes: dict[str, float] = {}
+
+        # BM25 索引
+        self._bm25_index: BM25Okapi | None = None
+        self._chunk_texts: list[str] = []
+        self._chunk_ids: list[str] = []
+        self._chunk_metas: list[dict] = []
+
+        # BM25 持久化路径
+        self._bm25_path = os.path.join(chroma_dir, "bm25_index.pkl")
 
         # Manifest 路径
         self._manifest_path = os.path.join(chroma_dir, ".manifest.json")
@@ -234,6 +247,8 @@ class RagKnowledgeBase:
             return False
         if not os.path.exists(os.path.join(self.chroma_dir, "chroma.sqlite3")):
             return False
+        if not os.path.exists(self._bm25_path):
+            return False
         try:
             with open(self._manifest_path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
@@ -277,6 +292,10 @@ class RagKnowledgeBase:
                 embedding_function=self.embeddings_model,
                 collection_name="chunks",
             )
+            # 加载已有 BM25 索引
+            if not self._load_bm25():
+                logger.warning("[KB] BM25 索引缺失，将从 ChromaDB 重建")
+                self._rebuild_bm25_from_chroma()
             logger.info(f"[KB] 索引加载完成（复用已有）")
             return
 
@@ -325,10 +344,15 @@ class RagKnowledgeBase:
         chunk_texts = [doc.page_content for doc in splits]
         chunk_ids = [f"chunk_{i}" for i in range(len(chunk_texts))]
         chunk_metas = []
-        for doc in splits:
+        for i, doc in enumerate(splits):
             src = doc.metadata.get("source", "")
             fname = os.path.basename(src) if src else "unknown"
-            chunk_metas.append({"filename": fname})
+            chunk_metas.append({"filename": fname, "chunk_index": i})
+
+        # 存储为实例属性（供 BM25 检索后查表）
+        self._chunk_texts = chunk_texts
+        self._chunk_ids = chunk_ids
+        self._chunk_metas = chunk_metas
 
         self.chunk_collection = Chroma.from_texts(
             texts=chunk_texts,
@@ -340,66 +364,189 @@ class RagKnowledgeBase:
         )
         logger.info(f"[KB] 片段索引就绪，{len(chunk_texts)} 个 chunk，{len(kb_files)} 个文档")
 
+        self._build_bm25()
         self._save_manifest()
 
-    # ── 检索 ───────────────────────────────────────────────────────────
+    # ── 分词 ───────────────────────────────────────────────────────────
 
-    # ChromaDB 默认余弦距离，1.0 = 正交（完全不相关），0.0 = 完全相同
-    SUMMARY_DISTANCE_THRESHOLD = 1.0
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """中英混合文本分词：英文/数字 token + 中文字符 unigram + bigram。"""
+        tokens = []
+        for m in re.finditer(r"[a-zA-Z0-9]+", text.lower()):
+            tokens.append(m.group())
+        chinese = re.findall(r"[一-鿿]", text)
+        tokens.extend(chinese)
+        for i in range(len(chinese) - 1):
+            tokens.append(chinese[i] + chinese[i + 1])
+        return tokens
+
+    # ── BM25 索引构建 / 持久化 ───────────────────────────────────────────
+
+    def _build_bm25(self) -> None:
+        """构建 BM25Okapi 索引并序列化到 chroma_db/。"""
+        if not self._chunk_texts:
+            self._bm25_index = None
+            return
+
+        tokenized = [self._tokenize(t) for t in self._chunk_texts]
+        self._bm25_index = BM25Okapi(tokenized)
+
+        data = {
+            "index": self._bm25_index,
+            "texts": self._chunk_texts,
+            "ids": self._chunk_ids,
+            "metas": self._chunk_metas,
+        }
+        try:
+            with open(self._bm25_path, "wb") as f:
+                pickle.dump(data, f)
+            logger.info(f"[KB] BM25 索引构建完成，{len(self._chunk_texts)} 个 chunk")
+        except Exception as e:
+            logger.warning(f"[KB] BM25 索引持久化失败: {e}")
+
+    def _load_bm25(self) -> bool:
+        """从 chroma_db/ 加载已有 BM25 索引。返回是否加载成功。"""
+        if not os.path.exists(self._bm25_path):
+            return False
+        try:
+            with open(self._bm25_path, "rb") as f:
+                data = pickle.load(f)
+            self._bm25_index = data["index"]
+            self._chunk_texts = data["texts"]
+            self._chunk_ids = data["ids"]
+            self._chunk_metas = data["metas"]
+            logger.info(f"[KB] BM25 索引加载完成（复用），{len(self._chunk_texts)} 个 chunk")
+            return True
+        except Exception as e:
+            logger.warning(f"[KB] BM25 索引加载失败，将重建: {e}")
+            self._bm25_index = None
+            return False
+
+    def _rebuild_bm25_from_chroma(self) -> None:
+        """从已加载的 ChromaDB chunk collection 重建 BM25 索引。"""
+        if self.chunk_collection is None:
+            return
+        try:
+            result = self.chunk_collection.get(include=["documents", "metadatas"])
+            texts = result.get("documents", [])
+            ids = result.get("ids", [])
+            metas = result.get("metadatas", [])
+            if not texts:
+                logger.warning("[KB] ChromaDB 中无 chunk 数据，跳过 BM25 重建")
+                return
+            # 确保 metas 中有 chunk_index（旧索引可能没有此字段）
+            for i, meta in enumerate(metas):
+                if "chunk_index" not in meta:
+                    meta["chunk_index"] = i
+            self._chunk_texts = texts
+            self._chunk_ids = ids
+            self._chunk_metas = metas
+            self._build_bm25()
+        except Exception as e:
+            logger.warning(f"[KB] 从 ChromaDB 重建 BM25 失败: {e}")
+
+    def _bm25_search(self, query: str, k: int = 20) -> list[tuple[int, float]]:
+        """BM25 关键词检索，返回 top-k 的 [(chunk_index, score), ...]（降序）。"""
+        if self._bm25_index is None or not self._chunk_texts:
+            return []
+        tokens = self._tokenize(query)
+        scores = self._bm25_index.get_scores(tokens)
+        indexed = list(enumerate(scores))
+        indexed.sort(key=lambda x: x[1], reverse=True)
+        top = indexed[:k]
+        logger.info(f"[KB] BM25 检索 top-{k}: {len(top)} 条，最高分 {top[0][1]:.2f}" if top else "[KB] BM25 检索无结果")
+        return [(idx, float(score)) for idx, score in top]
+
+    # ── RRF 融合 ────────────────────────────────────────────────────────
+
+    def _rrf_fusion(self,
+                    dense_ranked: list[tuple[int, float]],
+                    sparse_ranked: list[tuple[int, float]],
+                    k: int = 60) -> list[tuple[int, float]]:
+        """RRF 倒数排名融合。
+
+        Args:
+            dense_ranked: 语义检索结果，按距离升序（rank 1 = 最相关）
+            sparse_ranked: BM25 结果，按得分降序（rank 1 = 最相关）
+            k: RRF 平滑常数
+
+        Returns:
+            list of (chunk_index, rrf_score)，按 rrf_score 降序
+        """
+        scores: dict[int, float] = {}
+        for rank, (idx, _) in enumerate(dense_ranked, 1):
+            scores[idx] = scores.get(idx, 0) + 1.0 / (k + rank)
+        for rank, (idx, _) in enumerate(sparse_ranked, 1):
+            scores[idx] = scores.get(idx, 0) + 1.0 / (k + rank)
+        merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        logger.info(f"[KB] RRF 融合：语义 {len(dense_ranked)} + BM25 {len(sparse_ranked)} → {len(merged)} 条")
+        return merged
+
+    # ── 检索 ───────────────────────────────────────────────────────────
 
     # bge-reranker-base 经验阈值：>0 相关，-2~0 边界，<-2 不相关
     RERANK_LOW_THRESHOLD = -2.0
 
-    def retrieve(self, question: str):
-        """分层检索，返回 (检索内容, 置信度分数)。
+    async def retrieve(self, question: str):
+        """混合检索，返回 (检索内容, 置信度分数)。
 
-        Stage1 摘要匹配 → 命中则限定文档内 Stage2 精搜；
-        Stage1 全挂 → 全量 Stage2 精搜（不限定文档）+ CrossEncoder 评分。
-        置信度用于 synthesize 阶段判断是否标注"LLM 生成"。
+        双路并行 — 语义 (dense) + BM25 (sparse) → RRF 融合 → CrossEncoder 精排。
         """
-        if self.summary_collection is None or self.chunk_collection is None:
+        if self.chunk_collection is None:
             return ("[知识库不可用] 未找到已索引的文档。", -999.0)
 
-        # Stage 1: 摘要匹配
-        max_summaries = min(5, self.summary_collection._collection.count())
-        summary_results = self.summary_collection.similarity_search_with_score(
-            question, k=max_summaries
+        loop = asyncio.get_event_loop()
+
+        def _dense_search():
+            """语义检索：ChromaDB chunk top-k（运行时需挂 executor，避免阻塞事件循环）。"""
+            results = self.chunk_collection.similarity_search_with_score(
+                question, k=20
+            )
+            dense_ranked: list[tuple[int, float]] = []
+            for doc, distance in results:
+                idx = doc.metadata.get("chunk_index")
+                if idx is None:
+                    # 旧索引兼容：通过文本内容在 _chunk_texts 中查找
+                    try:
+                        idx = self._chunk_texts.index(doc.page_content)
+                    except ValueError:
+                        continue
+                dense_ranked.append((int(idx), float(distance)))
+            logger.info(f"[KB] 语义检索 top-20: {len(dense_ranked)} 条")
+            return dense_ranked
+
+        def _sparse_search():
+            """BM25 关键词检索。"""
+            return self._bm25_search(question, k=20)
+
+        # 并发执行双路检索
+        dense_ranked, sparse_ranked = await asyncio.gather(
+            loop.run_in_executor(None, _dense_search),
+            loop.run_in_executor(None, _sparse_search),
         )
-        matched_files: list[str] = []
-        for doc, distance in summary_results:
-            if distance < self.SUMMARY_DISTANCE_THRESHOLD:
-                fname = doc.metadata.get("filename", "")
-                if fname and fname not in matched_files:
-                    matched_files.append(fname)
-        matched_set = set(matched_files)
-        logger.info(
-            f"[KB] Stage1 摘要匹配 → 命中 {len(matched_files)}/{max_summaries} 个文档"
-            f"（阈值 {self.SUMMARY_DISTANCE_THRESHOLD}）: {matched_files}"
-        )
 
-        # Stage 2: chunk 精搜
-        raw_chunks = self.chunk_collection.similarity_search(question, k=10)
+        # RRF 融合
+        merged = self._rrf_fusion(dense_ranked, sparse_ranked, k=60)
+        if not merged:
+            logger.warning("[KB] RRF 融合后无结果")
+            return ("[知识库] 未检索到相关内容。", -999.0)
 
-        if matched_files:
-            # 有命中文档 → 限定范围内检索
-            filtered = [doc for doc in raw_chunks if doc.metadata.get("filename", "") in matched_set]
-            if len(filtered) < 3:
-                filtered = raw_chunks
-                logger.info(f"[KB] Stage2 过滤后仅 {len(filtered)} 条，放宽到全文档")
-        else:
-            # Stage1 全挂 → 不限文档，全量检索
-            filtered = raw_chunks
-            logger.info("[KB] Stage1 摘要全部未命中，Stage2 全量检索")
+        # 取 RRF top-10 → 通过 chunk_index 查表取文本
+        top_n = min(10, len(merged))
+        candidate_texts: list[str] = []
+        for chunk_idx, _ in merged[:top_n]:
+            if chunk_idx < len(self._chunk_texts):
+                candidate_texts.append(self._chunk_texts[chunk_idx])
 
-        contents = [doc.page_content for doc in filtered]
+        # CrossEncoder 精排
         top_score = 0.0
-
-        if self.reranker_model is not None:
-            ranked = self.rerank(question, contents, top_k=3, return_scores=True)
+        if self.reranker_model is not None and candidate_texts:
+            ranked = self.rerank(question, candidate_texts, top_k=3, return_scores=True)
             contents = [doc for doc, _ in ranked]
             top_score = float(ranked[0][1]) if ranked else -999.0
         else:
-            contents = contents[:3]
+            contents = candidate_texts[:3]
 
         logger.info(f"[KB] 检索完成，精排 Top 分数: {top_score:.2f}")
 

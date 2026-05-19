@@ -13,8 +13,8 @@ async def main():
     thread_id = str(uuid.uuid4())[:8]
 
     print("=" * 60)
-    print("  Agentic RAG v2 — 航天测控智能问答（意图路由版）")
-    print(f"  LLM: {LLM_PROVIDER}  |  会话 ID: {thread_id}")
+    print("  Agentic RAG v2 — ITU-R SNS 空间网络通知智能问答")
+    print(f"  LLM: {LLM_PROVIDER}  |  数据库: Access .mdb  |  会话 ID: {thread_id}")
     print("  路径: chat闲聊 | sql数据库 | kb知识库 | web网络搜索")
     print("  输入 'quit' 退出 | 'clear' 清空对话 | 'history' 查看历史")
     print("=" * 60)

@@ -1,8 +1,8 @@
 """
-Agentic RAG v2 — 面向 MySQL 结构化数据库的智能问答系统（意图路由版）
+Agentic RAG v2 — 面向 Access .mdb 结构化数据库的智能问答系统（意图路由版）
 
-实现已迁移至 RAG/agentic/ 包。
-本文件保留为兼容性入口，所有功能通过 agentic 包提供。
+面向 ITU-R 空间网络通知系统（SNS），64 张表、696 字段，Schema 动态检索注入。
+实现已迁移至 RAG/agentic/ 包。本文件保留为兼容性入口，所有功能通过 agentic 包提供。
 """
 
 import sys
