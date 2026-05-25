@@ -79,13 +79,41 @@ TABLE_DESC_JSON_PATH = os.path.join(PROJECT_ROOT, "..", "tmp", "table_desc.json"
 # ── Schema 检索配置 ────────────────────────────────────────────────────
 
 SCHEMA_CHROMA_DIR = os.path.join(PROJECT_ROOT, "schema_chroma_db")
+SCHEMA_ENRICHED_PATH = os.path.join(PROJECT_ROOT, "..", "tmp", ".schema_enriched.json")
+SCHEMA_ENRICHED_MANIFEST = os.path.join(PROJECT_ROOT, ".schema_enriched_manifest.json")
 MAX_SCHEMA_TABLES = 5
 MAX_SCHEMA_COLUMNS_PER_TABLE = 5
 GARBAGE_TABLES = {"名称自动更正保存失败", "表1"}
 
+# ── 自适应 Schema 检索 ────────────────────────────────────────────────
+
+MAX_SCHEMA_TABLES_BASE = 3     # 混合检索基线 top-K
+MAX_FK_EXPAND = 3              # FK 邻域最大扩展表数
+MAX_SCHEMA_TABLES_CAP = 12     # Schema 表数绝对上限
+MAX_SCHEMA_CHARS_CAP = 5000    # Schema 文本字符数上限（防止 context 爆炸）
+MAX_TABLE_WARN_THRESHOLD = 4   # SQL 中涉及表数超过此值时给出警告提示
+
+# ── JOIN 白名单 ────────────────────────────────────────────────────────
+# 只有在此列表中的表才允许 JOIN，其余表只允许单表查询
+
+ALLOWED_JOIN_TABLES = {
+    "notice", "ngma", "strap", "cmr_syst", "c_pfd",
+    "adm_assoc", "hor_elev", "e_stn", "e_ant_elev", "e_ant",
+    "e_as_stn", "e_srvcls", "non_geo", "geo", "pub_ssn",
+    "attch", "tr_aff_ntw", "tr_provn", "ntc_memo", "orbit",
+    "sat_oper", "phase", "orbit_lnk", "s_beam", "grp",
+    "fdg_ref", "srv_cls", "s_as_stn", "mod_char", "carrier_fr",
+    "srv_area",
+}
+
+# ── 查询记忆 ──────────────────────────────────────────────────────────
+
+QUERY_MEMORY_PATH = os.path.join(PROJECT_ROOT, "query_chroma_db")
+MAX_FEWSHOT_EXAMPLES = 3       # 注入 prompt 的最大少数示例数
+
 # ── LLM ────────────────────────────────────────────────────────────────
 
-LLM_PROVIDER: Literal["deepseek", "ollama"] = "ollama"
+LLM_PROVIDER: Literal["deepseek", "ollama"] = "deepseek"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
 
 MAX_SQL_RETRY = 3
@@ -93,7 +121,7 @@ MAX_REVIEW_RETRY = 2
 
 # ── 知识库路径 ─────────────────────────────────────────────────────────
 
-KB_DIR = os.path.join(PROJECT_ROOT, "kb")
+KB_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), "kb")
 CHROMA_DIR = os.path.join(PROJECT_ROOT, "chroma_db")
 SUMMARY_CACHE_PATH = os.path.join(PROJECT_ROOT, ".kb_summaries.json")
 

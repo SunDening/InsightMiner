@@ -15,7 +15,11 @@ from rank_bm25 import BM25Okapi
 
 from .config import (
     logger, SCHEMA_JSON_PATH, TABLE_DESC_JSON_PATH,
-    SCHEMA_CHROMA_DIR, MAX_SCHEMA_TABLES, MAX_SCHEMA_COLUMNS_PER_TABLE,
+    SCHEMA_CHROMA_DIR, SCHEMA_ENRICHED_PATH,
+    MAX_SCHEMA_TABLES, MAX_SCHEMA_COLUMNS_PER_TABLE,
+    MAX_SCHEMA_TABLES_BASE, MAX_FK_EXPAND, MAX_SCHEMA_TABLES_CAP,
+    MAX_SCHEMA_CHARS_CAP,
+    ALLOWED_JOIN_TABLES,
     GARBAGE_TABLES,
 )
 
@@ -81,15 +85,70 @@ class SchemaIndexer:
     # ── 元数据加载 ────────────────────────────────────────────────────
 
     def _load_metadata(self) -> None:
-        """从 schema.json + table_desc.json 加载并合并元数据。"""
-        if not os.path.exists(self.schema_json_path):
-            logger.warning(f"[SchemaIndexer] schema.json 不存在: {self.schema_json_path}")
+        """从 schema.json + table_desc.json 加载并合并元数据。
+
+        优先使用 .schema_enriched.json 中的 LLM 富化描述，
+        如不存在则回退到原始 schema.json。
+        """
+        enriched_data = None
+        if os.path.exists(SCHEMA_ENRICHED_PATH):
+            with open(SCHEMA_ENRICHED_PATH, "r", encoding="utf-8") as f:
+                enriched_data = json.load(f)
+            logger.info("[SchemaIndexer] 加载 LLM 富化 Schema 描述")
+
+        if enriched_data is None:
+            if not os.path.exists(self.schema_json_path):
+                logger.warning(
+                    f"[SchemaIndexer] schema.json 不存在: {self.schema_json_path}"
+                )
+                return
+            logger.info("[SchemaIndexer] 未找到富化描述，使用原始 schema.json")
+            self._load_from_raw_json()
             return
 
+        # 从富化数据构建 tables_meta
+        for t in enriched_data:
+            name = t["name"]
+            if name in GARBAGE_TABLES:
+                continue
+
+            columns = []
+            for c in t.get("columns", []):
+                col_name = c["name"]
+                # 合并富化列描述
+                col_enriched_desc = (
+                    t.get("col_enriched_desc", {}).get(col_name, "")
+                )
+                columns.append({
+                    "name": col_name,
+                    "type": c.get("type", "VARCHAR"),
+                    "size": c.get("size"),
+                    "nullable": c.get("nullable", True),
+                    "primary_key": c.get("primary_key", False),
+                    "description_en": c.get("description_en", ""),
+                    "description_zh": c.get("description_zh", ""),
+                    "enriched_desc": col_enriched_desc,
+                })
+
+            self.tables_meta[name] = {
+                "description": t.get("description", ""),
+                "module": t.get("module", ""),
+                "primary_key": t.get("primary_key", []),
+                "columns": columns,
+                "relationships": t.get("relationships", []),
+                "enriched_desc": t.get("table_enriched_desc", ""),
+            }
+
+        logger.info(
+            f"[SchemaIndexer] 已加载 {len(self.tables_meta)} 张表的元数据"
+            f"（含 LLM 富化描述）"
+        )
+
+    def _load_from_raw_json(self) -> None:
+        """回退方案：从原始 schema.json + table_desc.json 加载。"""
         with open(self.schema_json_path, "r", encoding="utf-8") as f:
             schema_data = json.load(f)
 
-        # 加载表描述（模块 + 业务含义）
         table_descriptions: dict[str, str] = {}
         table_modules: dict[str, str] = {}
         if os.path.exists(self.table_desc_path):
@@ -105,7 +164,6 @@ class SchemaIndexer:
             name = t["name"]
             if name in GARBAGE_TABLES:
                 continue
-
             columns = []
             for c in t.get("columns", []):
                 columns.append({
@@ -116,23 +174,16 @@ class SchemaIndexer:
                     "primary_key": c.get("primary_key", False),
                     "description_en": c.get("description_en", ""),
                     "description_zh": c.get("description_zh", ""),
+                    "enriched_desc": "",
                 })
-
-            # 合并 table_desc.json 的描述（业务含义优先于模块描述）
-            doc_desc = table_descriptions.get(name, "")
-            if not doc_desc:
-                # 尝试匹配可能的别名
-                pass
-
             self.tables_meta[name] = {
-                "description": doc_desc,
+                "description": table_descriptions.get(name, ""),
                 "module": table_modules.get(name, ""),
                 "primary_key": t.get("primary_key", []),
                 "columns": columns,
                 "relationships": t.get("relationships", []),
+                "enriched_desc": "",
             }
-
-        logger.info(f"[SchemaIndexer] 已加载 {len(self.tables_meta)} 张表的元数据")
 
     # ── Manifest ──────────────────────────────────────────────────────
 
@@ -202,8 +253,17 @@ class SchemaIndexer:
         # ── 表级文档 ──
         table_texts, table_ids, table_metas = [], [], []
         for name, meta in self.tables_meta.items():
+            enriched = meta.get("enriched_desc", "")
             col_names = ", ".join(c["name"] for c in meta["columns"])
-            text = f"{name} | {meta['description']} | {meta['module']} | COLUMNS: {col_names}"
+            if enriched:
+                # 优先使用 LLM 富化描述
+                text = enriched
+            else:
+                # 回退：技术描述
+                text = (
+                    f"{name} | {meta['description']} | {meta['module']} | "
+                    f"COLUMNS: {col_names}"
+                )
             table_texts.append(text)
             table_ids.append(name)
             table_metas.append({"table_name": name})
@@ -222,13 +282,17 @@ class SchemaIndexer:
         col_texts, col_ids, col_metas, col_refs = [], [], [], []
         for name, meta in self.tables_meta.items():
             for c in meta["columns"]:
-                desc_parts = []
-                if c["description_zh"]:
-                    desc_parts.append(c["description_zh"])
-                if c["description_en"]:
-                    desc_parts.append(c["description_en"])
-                desc = " | ".join(desc_parts)
-                text = f"{name}.{c['name']} | {c['type']} | {desc}"
+                enriched_col = c.get("enriched_desc", "")
+                if enriched_col:
+                    text = enriched_col
+                else:
+                    desc_parts = []
+                    if c["description_zh"]:
+                        desc_parts.append(c["description_zh"])
+                    if c["description_en"]:
+                        desc_parts.append(c["description_en"])
+                    desc = " | ".join(desc_parts)
+                    text = f"{name}.{c['name']} | {c['type']} | {desc}"
                 col_texts.append(text)
                 col_ids.append(f"{name}.{c['name']}")
                 col_metas.append({"table_name": name, "column_name": c["name"]})
@@ -453,6 +517,107 @@ class SchemaIndexer:
         return None
 
     # ═══════════════════════════════════════════════════════════════════
+    # 桥接表发现
+    # ═══════════════════════════════════════════════════════════════════
+
+    def find_bridge_tables(self, target_tables: list[str]) -> list[str]:
+        """给定用户指定的表集合，找出连接它们所需的桥接表。
+
+        仅在 ALLOWED_JOIN_TABLES 范围内寻找桥接表。
+        """
+        if len(target_tables) <= 1:
+            return []
+
+        # 构建双向邻接图（仅白名单内的表）
+        neighbors: dict[str, set[str]] = {}
+        for tbl, edges in self.fk_graph.items():
+            if tbl not in ALLOWED_JOIN_TABLES:
+                continue
+            neighbors.setdefault(tbl, set())
+            for _, tgt, _ in edges:
+                if tgt in self.fk_graph and tgt in ALLOWED_JOIN_TABLES:
+                    neighbors[tbl].add(tgt)
+                    neighbors.setdefault(tgt, set()).add(tbl)
+
+        # 检查每对指定的表之间是否可以直连
+        bridges = set()
+        for i, t1 in enumerate(target_tables):
+            for t2 in target_tables[i + 1:]:
+                # 直连检查
+                t1_neighbors = neighbors.get(t1, set())
+                t2_neighbors = neighbors.get(t2, set())
+                if t2 in t1_neighbors or t1 in t2_neighbors:
+                    continue  # 可直连，不需要桥接表
+
+                # BFS 找最短路径，中间节点即为桥接表
+                path = self._bfs_to(t1, t2, neighbors)
+                if path and len(path) > 2:
+                    # path[0]=t1, path[-1]=t2, 中间的都是桥接表
+                    for mid in path[1:-1]:
+                        if mid not in target_tables:
+                            bridges.add(mid)
+
+        return list(bridges)
+
+    def _bfs_to(self, start: str, target: str,
+                neighbors: dict[str, set[str]]) -> list[str] | None:
+        """BFS 找 start → target 最短路径。"""
+        if start == target:
+            return [start]
+        visited = {start: None}
+        queue = [start]
+        while queue:
+            current = queue.pop(0)
+            for nb in neighbors.get(current, set()):
+                if nb not in visited:
+                    visited[nb] = current
+                    queue.append(nb)
+                    if nb == target:
+                        path = [target]
+                        while path[-1] != start:
+                            path.append(visited[path[-1]])
+                        path.reverse()
+                        return path
+        return None
+
+    def _expand_fk_neighbors(self, selected: list[str],
+                             max_expand: int) -> list[str]:
+        """沿 FK 关系扩展 1-hop 邻居表。
+
+        对已选中的每张表，收集其外键邻居，按连通度降序排列，
+        取 top-N 作为扩展表。高连通度的桥接表（如 notice）自然优先。
+
+        Args:
+            selected: 已选中的表名列表
+            max_expand: 最大扩展表数
+
+        Returns:
+            按优先级排列的邻居表名列表（不包含已选中的表）
+        """
+        neighbor_scores: dict[str, int] = {}
+        for tbl in selected:
+            for _, tgt, _ in self.fk_graph.get(tbl, []):
+                if (tgt not in selected and tgt in self.fk_graph
+                        and tgt in ALLOWED_JOIN_TABLES):
+                    neighbor_scores[tgt] = neighbor_scores.get(tgt, 0) + 1
+            # 反向：哪些表指向 selected 中的表
+            for src, edges in self.fk_graph.items():
+                for _, tgt, _ in edges:
+                    if (tgt == tbl and src not in selected
+                            and src in self.fk_graph
+                            and src in ALLOWED_JOIN_TABLES):
+                        neighbor_scores[src] = neighbor_scores.get(src, 0) + 1
+
+        # 按连通度降序
+        ranked = sorted(neighbor_scores.items(), key=lambda x: x[1], reverse=True)
+        result = [tbl for tbl, _ in ranked[:max_expand]]
+        logger.info(
+            f"[SchemaIndexer] FK 扩展 {len(selected)} →  "
+            f"+{len(result)} 张邻居表"
+        )
+        return result
+
+    # ═══════════════════════════════════════════════════════════════════
     # 公共 API
     # ═══════════════════════════════════════════════════════════════════
 
@@ -466,7 +631,9 @@ class SchemaIndexer:
             parts.append(f"{name}（{desc}）" if desc else name)
         return "、".join(parts)
 
-    async def build_schema_context(self, query: str) -> str:
+    async def build_schema_context(self, query: str,
+                                    force_tables: list[str] | None = None,
+                                    entity_scope: list[str] | None = None) -> str:
         """动态检索并组装相关 Schema 上下文。
 
         Pipeline:
@@ -474,9 +641,19 @@ class SchemaIndexer:
           2. 列级混合检索 → 每表 top-M 列 + PK/FK 列
           3. FK 图计算 Join 路径
           4. 组装为 LLM 可读的文本块
+
+        Args:
+            query: 用户查询
+            force_tables: 可选，强制包含的表名列表（放在检索结果最前面）
+            entity_scope: 可选，限定检索范围的表名列表（由 EntityRouter 提供）
         """
         if self.table_index is None or not self.tables_meta:
             return "（Schema 索引不可用）"
+
+        force_set = set(t.strip() for t in (force_tables or [])
+                        if t.strip() in self.tables_meta)
+        scope_set = set(t.strip() for t in (entity_scope or [])
+                        if t.strip() in self.tables_meta) if entity_scope else None
 
         loop = asyncio.get_event_loop()
 
@@ -498,11 +675,39 @@ class SchemaIndexer:
         )
 
         merged = self._rrf_fusion(dense_table, sparse_table, k=60)
+
+        # 优先从 JOIN 白名单中找表，不够再补其他表
+        if ALLOWED_JOIN_TABLES:
+            allowed_merged = [(idx, score) for idx, score in merged
+                              if idx < len(self._table_names)
+                              and self._table_names[idx] in ALLOWED_JOIN_TABLES]
+            other_merged = [(idx, score) for idx, score in merged
+                            if idx < len(self._table_names)
+                            and self._table_names[idx] not in ALLOWED_JOIN_TABLES]
+            # 白名单表排前面，其他表排后面
+            merged = allowed_merged + other_merged
+
+        # 实体范围过滤：限定在 entity_scope 内的表
+        if scope_set:
+            filtered = [(idx, score) for idx, score in merged
+                        if idx < len(self._table_names)
+                        and self._table_names[idx] in scope_set]
+            if filtered:
+                merged = filtered
+            else:
+                logger.info("[SchemaIndexer] 实体范围内无匹配表，使用全库检索")
+
         if not merged:
             return "（未找到相关表，请检查查询）"
 
         # 取 top-K 张表
-        top_k = min(MAX_SCHEMA_TABLES, len(merged))
+        # 自适应 K: 用户指定表 → 扩大槽位；FK 扩展 → 补充邻域表
+        base_k = min(MAX_SCHEMA_TABLES_BASE, len(merged))
+        # 用户指定表不计入检索基线
+        forced_count = len(force_set)
+        top_k = base_k + forced_count  # 基线 + 用户强制表
+        # 安全阀
+        top_k = min(MAX_SCHEMA_TABLES_CAP, top_k, len(merged) + forced_count)
         selected_tables = []
         candidate_texts = []
         for idx, _ in merged[:max(top_k + 5, 10)]:
@@ -516,16 +721,34 @@ class SchemaIndexer:
 
         # CrossEncoder 精排表
         if self.reranker_model is not None and len(candidate_texts) > 1:
+            # 保存候选文本对应的表名（rerank 后通过文本内容回查表名）
+            candidate_map = {text: name for text, name in
+                             zip(candidate_texts, selected_tables)}
             candidate_texts = self._rerank(query, candidate_texts, top_k=top_k)
-            # 映射回表名
             ranked_names = []
             for text in candidate_texts:
-                name = text.split(" | ")[0].strip()
-                if name in selected_tables:
+                name = candidate_map.get(text, "")
+                if name and name in selected_tables:
                     ranked_names.append(name)
             selected_tables = ranked_names[:top_k]
         else:
             selected_tables = selected_tables[:top_k]
+
+        # 强制包含用户指定的表（放在最前面）
+        for ft in reversed(list(force_set)):
+            if ft in selected_tables:
+                selected_tables.remove(ft)
+            selected_tables.insert(0, ft)
+
+        # FK 邻域扩展：沿外键扩展 1-hop，发现间接相关的表
+        if len(selected_tables) < MAX_SCHEMA_TABLES_CAP:
+            expanded = self._expand_fk_neighbors(selected_tables, MAX_FK_EXPAND)
+            for tbl in expanded:
+                if tbl not in selected_tables:
+                    selected_tables.append(tbl)
+
+        # 截断到安全上限
+        selected_tables = selected_tables[:MAX_SCHEMA_TABLES_CAP]
 
         if not selected_tables:
             return "（未找到相关表）"
@@ -600,15 +823,16 @@ class SchemaIndexer:
                         col_candidate_names.append(col_name)
 
             if self.reranker_model is not None and len(col_candidates) > 1:
+                # 保存候选文本对应的列名
+                col_candidate_map = dict(zip(col_candidates, col_candidate_names))
                 col_candidates = self._rerank(
                     f"{tbl} {query}", col_candidates,
                     top_k=MAX_SCHEMA_COLUMNS_PER_TABLE,
                 )
-                # 映射回列名
                 final_cols = []
                 for text in col_candidates:
-                    col_name = text.split(" | ")[0].split(".")[-1].strip()
-                    if col_name in col_candidate_names and col_name not in already:
+                    col_name = col_candidate_map.get(text, "")
+                    if col_name and col_name not in already:
                         final_cols.append(col_name)
                         already.add(col_name)
             else:
@@ -632,15 +856,26 @@ class SchemaIndexer:
                 continue
             desc = meta.get("description", "")
             module = meta.get("module", "")
+            enriched = meta.get("enriched_desc", "")
             pk_str = ", ".join(meta.get("primary_key", []))
 
-            header = f"### {tbl}"
+            joinable = "✓JOIN" if tbl in ALLOWED_JOIN_TABLES else "✗单表"
+            header = f"### [{joinable}] {tbl}"
             if desc:
                 header += f" — {desc}"
             if module:
                 header += f" ({module})"
             parts.append(header)
             parts.append(f"PK: {pk_str}" if pk_str else "PK: (none)")
+
+            # 优先展示 LLM 富化表描述
+            if enriched:
+                # 提取富化描述中的关键行（去掉 [TBL] 前缀行）
+                lines = enriched.strip().split("\n")
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("[TBL]"):
+                        parts.append(stripped)
 
             parts.append("关键列:")
             for col_name in selected_columns.get(tbl, []):
@@ -656,28 +891,43 @@ class SchemaIndexer:
                 if col_name in meta.get("primary_key", []):
                     flags.append("PK")
                 if col_name in fk_columns.get(tbl, set()):
-                    # 找目标表
                     for fc, tt, tc in self.fk_graph.get(tbl, []):
                         if fc == col_name:
                             flags.append(f"FK → {tt}.{tc}")
                             break
 
                 flag_str = f" ({', '.join(flags)})" if flags else ""
+                # 优先使用 LLM 富化列描述
+                enriched_col = col_info.get("enriched_desc", "")
                 desc_str = col_info.get("description_zh") or col_info.get("description_en") or ""
+                if enriched_col:
+                    desc_str = enriched_col
                 parts.append(f"  - {col_name} {col_info['type']}{flag_str} — {desc_str}")
             parts.append("")
 
-        # 表间关联
+        # 表间关联（仅展示白名单内 JOIN）
         if join_paths:
-            parts.append("## 表间关联")
-            seen_joins = set()
-            for jp in join_paths:
-                key = (jp["from_table"], jp["to_table"])
-                if key not in seen_joins:
-                    seen_joins.add(key)
-                    parts.append(f"- {jp['from_table']}.{jp['from_col']} → "
-                                 f"{jp['to_table']}.{jp['to_col']}")
+            whitelist_joins = [
+                jp for jp in join_paths
+                if jp["from_table"] in ALLOWED_JOIN_TABLES
+                and jp["to_table"] in ALLOWED_JOIN_TABLES
+            ]
+            if whitelist_joins:
+                parts.append("## 表间关联")
+                seen_joins = set()
+                for jp in whitelist_joins:
+                    key = (jp["from_table"], jp["to_table"])
+                    if key not in seen_joins:
+                        seen_joins.add(key)
+                        parts.append(f"- {jp['from_table']}.{jp['from_col']} → "
+                                     f"{jp['to_table']}.{jp['to_col']}")
             parts.append("")
+
+        # JOIN 白名单约束标注
+        single_only_tables = [t for t in selected_tables
+                              if t not in ALLOWED_JOIN_TABLES]
+        joinable_tables = [t for t in selected_tables
+                           if t in ALLOWED_JOIN_TABLES]
 
         parts.append("## SQL 注意事项")
         parts.append("- 数据库类型：Microsoft Access (.mdb)，使用 Jet SQL 语法")
@@ -686,11 +936,20 @@ class SchemaIndexer:
         parts.append("- 不支持 WITH ... AS (CTE)，请使用子查询代替")
         parts.append("- 时间类型为 DATETIME，用 #YYYY-MM-DD HH:MM:SS# 格式表示")
         parts.append("- 字符串比较优先用 = 精确匹配，模糊搜索用 LIKE '%keyword%'")
-        parts.append("- 多表查询使用 JOIN ... ON 指定关联条件")
         parts.append("- 聚合查询使用 GROUP BY 和聚合函数")
         parts.append("- 默认 SELECT TOP 50")
 
+        if single_only_tables:
+            parts.append(
+                f"\n## ⚠️ JOIN 约束\n"
+                f"以下表只允许单表查询，禁止 JOIN：{', '.join(single_only_tables)}\n"
+                f"以下表允许 JOIN：{', '.join(joinable_tables) if joinable_tables else '无'}"
+            )
+
         result = "\n".join(parts)
+        # 字符数上限保护
+        if len(result) > MAX_SCHEMA_CHARS_CAP:
+            result = result[:MAX_SCHEMA_CHARS_CAP] + "\n（Schema 上下文已截断）"
         logger.info(f"[SchemaIndexer] schema 组装完成：{len(selected_tables)} 表, "
                     f"{sum(len(v) for v in selected_columns.values())} 列, "
                     f"{len(result)} 字符")

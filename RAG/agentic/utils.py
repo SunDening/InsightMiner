@@ -140,6 +140,35 @@ def _parse_json_response(raw: str, question: str) -> str:
     }, ensure_ascii=False, indent=2)
 
 
+def _extract_table_names(text: str, known_tables: set[str]) -> tuple[list[str], list[str]]:
+    """从用户查询中提取明确提到的表名。
+
+    策略：扫描查询中的所有 ASCII token，与已知表名精确匹配或前缀匹配。
+    例如 "notice表中" → notice 匹配 known_tables 中的 notice。
+    返回 (匹配到的已知表, 疑似表名但不在库中的字符串)。
+    """
+    mentioned = []
+    unknown = []
+    # 提取所有纯 ASCII 英文/数字/下划线 token（表名只可能是这些字符）
+    # 注意：不用 \w，因为 Python re 的 \w 默认包含 Unicode 字母（如中文）
+    tokens = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', text)
+    known_lower = {t.lower(): t for t in known_tables}
+
+    for token in tokens:
+        token_lower = token.lower()
+        # 仅精确匹配——像 "adm" 这样的列名不应匹配 "adm_assoc" 表
+        if token_lower in known_lower:
+            tbl = known_lower[token_lower]
+            if tbl not in mentioned:
+                mentioned.append(tbl)
+            continue
+        # 不在已知表中 → 如果看起来像表名（纯小写英文+下划线, >=3 字符），标记为 unknown
+        if len(token) >= 3 and re.match(r'^[a-z_]+$', token_lower):
+            unknown.append(token)
+
+    return mentioned, unknown
+
+
 def _format_history(messages: list, max_pairs: int = 6) -> str:
     """将最近 N 条消息格式化为对话历史文本。"""
     if not messages:

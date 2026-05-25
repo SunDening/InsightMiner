@@ -27,6 +27,7 @@ from .utils import (
 from .web_search import search_web
 from .knowledge_base import RagKnowledgeBase
 from .schema_indexer import SchemaIndexer
+from .query_memory import QueryMemory
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -40,11 +41,16 @@ class AgentState(TypedDict):
     intent:          str          # chat | sql | kb | web | clarify
     current_time:    str
     # SQL 路径
-    schema_context:  str
-    sql:             str
-    query_result:    str
-    retry_count:     int
-    error_info:      str
+    schema_context:       str
+    full_schema_context:  str    # build_schema 的原始完整输出，重试时回退使用
+    schema_tables:        list   # build_schema 检索到的全部表名
+    explicit_tables:      list   # 用户明确指定的表名
+    bridge_tables:        list   # 连接指定表所需的桥接表（FK 图自动发现）
+    query_memory_fewshot: str    # 从 QueryMemory 检索到的 few-shot 示例
+    sql:                  str
+    query_result:         str
+    retry_count:          int
+    error_info:           str
     # KB / Web 路径
     retrieved_docs:  str
     kb_confidence:   float         # 精排最高分，用于判断是否 LLM 兜底
@@ -74,7 +80,8 @@ INTENT_CLASSIFY_PROMPT = """你是一个 ITU-R 空间网络通知系统（SNS）
 - 模糊时间词（"最近""近期""今天"）→ 结合当前时间替换为具体日期范围
 - 代词（"那个""它"）→ 根据对话历史确定具体实体
 - 口语化表达 → 数据库查询/文档检索友好的措辞
-- SQL 意图补充表名和字段；KB 意图提取核心关键词；Web 意图优化搜索词
+- SQL 意图：只补全用户提到的条件的字段名，不要自行添加用户没提的表名或关联路径。例如用户说"查XX表中YY=ZZ的记录"，改写为"查询XX表中YY=ZZ的记录"即可，不要写成"通过AA表关联XX表"
+- KB 意图提取核心关键词；Web 意图优化搜索词
 
 ## 对话历史
 {history}
@@ -166,11 +173,26 @@ SQL_GEN_PROMPT = """你是一个 Microsoft Access (Jet SQL) 专家。
   - ⚠️ JOIN 必须写明类型：INNER JOIN / LEFT JOIN / RIGHT JOIN，绝对禁止裸写 JOIN
   - 不支持 WITH ... AS (CTE)，复杂查询用子查询或嵌套 SELECT
   - 不支持 CASE WHEN，用 IIF() 或 SWITCH() 代替
-- 只输出 SQL 语句本身，不要代码块标记、不要解释
-- 字符串精确匹配用 =，模糊搜索用 LIKE '%keyword%'
-- 多表查询正确使用 INNER JOIN 或 LEFT JOIN 和外键关系
+- **表数量最小化原则**：只使用回答问题绝对必要的表。每多 JOIN 一张不必要的表，用户的查询结果就会包含错误数据。如果查询只用一张表就能完成，就不要 JOIN 任何其他表。绝对不要为了"查询更全面"而增加额外的表 JOIN。
+- **单表优先原则**：如果用户问题只涉及一张表就只查那一张表，禁止为了"更准确"而添加不必要的 JOIN。只有当用户明确要求跨表关联时才 JOIN
 - 聚合查询正确使用 GROUP BY
-- 默认 SELECT TOP 50"""
+- 默认 SELECT TOP 50
+
+## 反面示例
+用户问："查询 notice 表中 2024 年的通知数量"。
+错误做法：SELECT COUNT(*) FROM notice INNER JOIN adm_assoc ON notice.ntc_id = adm_assoc.ntc_id WHERE YEAR(notice.date) = 2024
+正确做法：SELECT COUNT(*) FROM notice WHERE YEAR(date) = 2024
+
+用户问："列出 grp 表中的所有频率指配记录"。
+错误做法：SELECT grp.* FROM grp INNER JOIN s_beam ON grp.grp_id = s_beam.grp_id
+正确做法：SELECT TOP 50 * FROM grp
+
+## 输出前自检
+在最终 SQL 之前，用一行 SQL 注释列出你使用的所有表，并简要说明每张表为什么必不可少。格式：
+-- 表: notice (存储通知数据，问题直接询问此表), adm_assoc (用户要求关联主管部门信息)
+SELECT ...
+
+只输出 SQL 语句和自检注释，不要额外解释。"""
 
 
 SYNTHESIZE_PROMPT = """你是一个航天测控领域的智能数据分析助手。
@@ -369,79 +391,311 @@ async def chat_respond_node(state: AgentState) -> dict:
     }
 
 
-def make_build_schema_node(indexer: SchemaIndexer):
-    """动态检索相关表的 schema 上下文。"""
+def make_build_schema_node(indexer: SchemaIndexer, entity_router=None):
+    """动态检索相关表的 schema 上下文，并强制包含用户明确指定的表。
+
+    集成 EntityRouter：先做实体路由缩小范围，再做精细检索。
+    """
     async def build_schema_node(state: AgentState) -> dict:
         query = state.get("rewritten_query") or state["question"]
-        schema_context = await indexer.build_schema_context(query)
-        logger.info(f"[Schema] 动态组装完成，{len(schema_context)} 字符")
-        return {"schema_context": schema_context, "retry_count": 0, "error_info": ""}
+        raw_question = state.get("question", "")
+
+        # 提前提取用户明确提到的表名（仅从原始问题提取，rewrite 可能引入多余表）
+        from .utils import _extract_table_names
+        mentioned, _ = _extract_table_names(
+            raw_question, set(indexer.tables_meta.keys())
+        )
+
+        # 发现桥接表
+        bridges = indexer.find_bridge_tables(mentioned) if len(mentioned) >= 2 else []
+        force_tables = mentioned + bridges
+
+        # 实体路由：仅在用户未指定表名时使用，缩小搜索空间
+        entity_scope = None
+        if entity_router is not None and not mentioned:
+            entity_scope = entity_router.route(query, max_entities=2)
+
+        schema_context = await indexer.build_schema_context(
+            query, force_tables=force_tables, entity_scope=entity_scope,
+        )
+        # 从 schema_context 文本中提取表名（匹配 ### [标签] table_name 格式）
+        _parsed_tables = re.findall(r'^###\s+\[.+?\]\s+(\w+)', schema_context, re.MULTILINE)
+        # 确保用户指定表和桥接表在列表中
+        _all_schema_tables = list(dict.fromkeys(force_tables + _parsed_tables))
+
+        logger.info(f"[Schema] 动态组装完成，{len(schema_context)} 字符, "
+                    f"{len(_all_schema_tables)} 张表"
+                    f"{' (指定: ' + ', '.join(mentioned) + ')' if mentioned else ''}"
+                    f"{' (桥接: ' + ', '.join(bridges) + ')' if bridges else ''}"
+                    f"{' (实体: ' + str(len(entity_scope)) + '表)' if entity_scope else ''}")
+        return {
+            "schema_context": schema_context,
+            "full_schema_context": schema_context,
+            "schema_tables": _all_schema_tables,
+            "explicit_tables": mentioned,
+            "bridge_tables": bridges,
+            "retry_count": 0,
+            "error_info": "",
+        }
     return build_schema_node
 
 
-async def generate_sql_node(state: AgentState) -> dict:
-    """根据用户问题 + schema + 历史 → 生成 SQL。"""
-    llm = create_llm(LLM_PROVIDER, temperature=0.1)
+def _filter_schema_context(schema_text: str, keep_tables: list[str]) -> str:
+    """从完整 schema_context 中仅保留指定表的段落。
 
-    question = state.get("rewritten_query") or state["question"]
-    schema = state.get("schema_context", "")
-    history = _format_history(state.get("messages", []))
-    retry_count = state.get("retry_count", 0)
-    error_info = state.get("error_info", "")
+    结构划分：
+      1. 全局头部 — 第一个 '### [' 之前的所有内容（如 "## 相关表 (N/M)"）
+      2. 表段落 — 以 '### [' 开头，到下一个 '### [' 或 '## ' 为止
+      3. 全局尾部 — 表段落结束后，以 '## ' 开头的全局信息
+         （如 "## 表间关联"、"## SQL 注意事项"、"## ⚠️ JOIN 约束"）
+    保留：全局头部 + 匹配表的段落 + 全局尾部。
+    """
+    keep_set = set(t.strip().lower() for t in keep_tables)
+    lines = schema_text.split("\n")
 
-    # 从对话历史中提取上一轮查询上下文
-    previous_context_hint = ""
-    messages = state.get("messages", [])
-    if messages:
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and msg.content:
-                try:
-                    prev = json.loads(msg.content)
-                    prev_answer = prev.get("answer", "")
-                    prev_rewritten = prev.get("rewritten_query", "")
-                    prev_evidence = ""
-                    for src in prev.get("data_sources", []):
-                        if src.get("source_type") == "mysql":
-                            prev_evidence = src.get("evidence", "")
-                            break
-                    if prev_answer or prev_rewritten:
-                        parts = []
-                        if prev_rewritten:
-                            parts.append(f"上一轮查询: {prev_rewritten}")
-                        if prev_answer:
-                            parts.append(f"上一轮回答: {prev_answer[:500]}")
-                        if prev_evidence:
-                            parts.append(f"上一轮查询结果: {prev_evidence[:500]}")
-                        previous_context_hint = (
-                            f"\n\n## 上一轮对话的上下文（用于理解当前问题的代词和指代）\n"
-                            + "\n".join(parts) + "\n\n"
-                            f"如果当前问题使用了代词（如'它们''这些''其'），"
-                            f"请根据上一轮的查询结果确定具体指代实体（如具体的卫星编号），"
-                            f"并在当前 SQL 中加上对应的过滤条件（如 WHERE satellite_code IN (...) 或 WHERE satellite_id IN (...)）。"
-                        )
+    # 第一遍：定位各区域的边界
+    first_table_idx: int | None = None
+    footer_start_idx: int | None = None
+
+    for i, line in enumerate(lines):
+        if re.match(r'^###\s+\[.+?\]\s+\w+', line):
+            if first_table_idx is None:
+                first_table_idx = i
+        elif first_table_idx is not None and re.match(r'^##\s', line):
+            footer_start_idx = i
+            break  # 第一个 ## 头部之后即全局尾部
+
+    if first_table_idx is None:
+        return schema_text  # 无表段落，返回原文
+
+    result: list[str] = []
+
+    # 1) 全局头部
+    result.extend(lines[:first_table_idx])
+
+    # 2) 遍历表段落，仅保留匹配者
+    table_zone_end = footer_start_idx if footer_start_idx is not None else len(lines)
+    i = first_table_idx
+    while i < table_zone_end:
+        m = re.match(r'^###\s+\[.+?\]\s+(\w+)', lines[i])
+        if m:
+            tbl_name = m.group(1).strip().lower()
+            # 找到此表段落的结束：下一个 ### [ 或 ##  或 table_zone_end
+            j = i + 1
+            while j < table_zone_end:
+                if re.match(r'^###\s+\[.+?\]\s+\w+', lines[j]):
+                    break
+                j += 1
+            if tbl_name in keep_set:
+                result.extend(lines[i:j])
+            i = j
+        else:
+            # 表段落内的非表头行（不应出现，防御性跳过）
+            i += 1
+
+    # 3) 全局尾部
+    if footer_start_idx is not None:
+        result.extend(lines[footer_start_idx:])
+
+    return "\n".join(result)
+
+
+def make_select_tables_node(indexer: SchemaIndexer):
+    """表必要性判断节点 — 在 build_schema 和 generate_sql 之间，
+
+    用一次轻量 LLM 调用选出真正需要的表（通常 1-3 张），
+    裁剪 schema_context 后再送入 SQL 生成，根除"看到就想 JOIN"的冲动。
+    """
+    async def select_tables_node(state: AgentState) -> dict:
+        llm = create_llm(LLM_PROVIDER, temperature=0.0)
+        question = state.get("rewritten_query") or state["question"]
+        schema_tables = state.get("schema_tables", [])
+        explicit_tables = state.get("explicit_tables", [])
+        bridge_tables = state.get("bridge_tables", [])
+        full_schema = state.get("full_schema_context", "")
+
+        # 如果用户已指定表且只有 1-2 张，跳过 LLM 调用
+        mandatory = list(dict.fromkeys(explicit_tables + bridge_tables))
+        if len(schema_tables) <= 2:
+            return {"schema_context": full_schema}
+
+        # 构建轻量表描述（仅表名 + 一句话描述，不给列详情和 JOIN 路径）
+        table_descs = []
+        for tbl_name in schema_tables:
+            meta = indexer.tables_meta.get(tbl_name, {})
+            desc = meta.get("description", "")
+            enriched = meta.get("enriched_desc", "")
+            # 优先取富化描述的首句，否则取原始描述
+            if enriched:
+                lines = enriched.strip().split("\n")
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("[TBL]"):
+                        desc = stripped[:120]
                         break
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            elif desc:
+                desc = desc[:120]
+            table_descs.append(f"- {tbl_name}: {desc}" if desc else f"- {tbl_name}")
 
-    if error_info:
-        error_block = (
-            f"## ⚠️ 上一次 SQL 失败\n"
-            f"上次 SQL: {state.get('sql', 'N/A')}\n"
-            f"失败原因: {error_info}\n"
-            f"请修正错误。只输出修正后的 SQL，不要解释。"
+        mandatory_hint = ""
+        if mandatory:
+            mandatory_hint = (
+                f"\n以下表为用户明确指定或必需的桥接表，必须包含在结果中："
+                f"{', '.join(mandatory)}"
+            )
+
+        prompt = (
+            f"你是一个数据库专家。用户问题：\"{question}\"\n\n"
+            f"可用的数据库表及简要说明：\n"
+            f"{chr(10).join(table_descs)}\n"
+            f"{mandatory_hint}\n\n"
+            f"请严格分析解决问题所必需的最小表集合（通常1-3张），"
+            f"不要包含任何可被替代或冗余的表。"
+            f"只输出JSON：{{\"necessary_tables\": [\"table_a\", \"table_b\"]}}"
         )
-    else:
-        error_block = ""
 
-    prompt = SQL_GEN_PROMPT.format(
-        history=history, schema=schema, question=question, error_block=error_block
-    ) + previous_context_hint
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        raw = response.content.strip()
 
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    sql = _clean_sql_output(response.content.strip())
+        necessary_tables: list[str] = []
+        try:
+            parsed = json.loads(_extract_json(raw))
+            llm_selected = parsed.get("necessary_tables", [])
+            if isinstance(llm_selected, list) and llm_selected:
+                necessary_tables = [t for t in llm_selected
+                                    if isinstance(t, str) and t.strip() in indexer.tables_meta]
+        except json.JSONDecodeError:
+            pass
 
-    logger.info(f"[SQL-Gen] 生成 SQL (retry={retry_count}): {sql[:200]}")
-    return {"sql": sql, "retry_count": retry_count}
+        # 保底：LLM 输出为空或解析失败 → 使用全部表
+        if not necessary_tables:
+            logger.info("[TableSelect] 未能选出表，使用完整 schema")
+            return {"schema_context": full_schema}
+
+        # 合并强制表
+        for t in mandatory:
+            if t not in necessary_tables:
+                necessary_tables.insert(0, t)
+
+        # 裁剪 schema
+        filtered = _filter_schema_context(full_schema, necessary_tables)
+        logger.info(
+            f"[TableSelect] {len(schema_tables)} 表 → "
+            f"{len(necessary_tables)} 表: {', '.join(necessary_tables[:8])}"
+        )
+        return {"schema_context": filtered if filtered else full_schema}
+
+    return select_tables_node
+
+
+def make_generate_sql_node(memory: QueryMemory | None = None):
+    """根据用户问题 + schema + 历史 + QueryMemory → 生成 SQL。"""
+    async def generate_sql_node(state: AgentState) -> dict:
+        llm = create_llm(LLM_PROVIDER, temperature=0.1)
+
+        question = state.get("rewritten_query") or state["question"]
+        history = _format_history(state.get("messages", []))
+        retry_count = state.get("retry_count", 0)
+        error_info = state.get("error_info", "")
+
+        # 首次用过滤后的 schema，重试时回退到全量 schema
+        if retry_count > 0:
+            schema = state.get("full_schema_context", "")
+            if schema:
+                logger.info("[SQL-Gen] 重试模式：使用全量 schema 回退")
+        else:
+            schema = state.get("schema_context", "")
+        if not schema:
+            schema = state.get("full_schema_context", "")
+
+        # 检索相似历史查询作为 few-shot 示例
+        fewshot = ""
+        raw_question = state.get("question", "")
+        if memory is not None and retry_count == 0:
+            fewshot = memory.search(raw_question)
+            if fewshot:
+                logger.info("[SQL-Gen] 注入 QueryMemory few-shot 示例")
+
+        # 从对话历史中提取上一轮查询上下文
+        previous_context_hint = ""
+        messages = state.get("messages", [])
+        if messages:
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    try:
+                        prev = json.loads(msg.content)
+                        prev_answer = prev.get("answer", "")
+                        prev_rewritten = prev.get("rewritten_query", "")
+                        prev_evidence = ""
+                        for src in prev.get("data_sources", []):
+                            if src.get("source_type") == "mysql":
+                                prev_evidence = src.get("evidence", "")
+                                break
+                        if prev_answer or prev_rewritten:
+                            parts = []
+                            if prev_rewritten:
+                                parts.append(f"上一轮查询: {prev_rewritten}")
+                            if prev_answer:
+                                parts.append(f"上一轮回答: {prev_answer[:500]}")
+                            if prev_evidence:
+                                parts.append(f"上一轮查询结果: {prev_evidence[:500]}")
+                            previous_context_hint = (
+                                f"\n\n## 上一轮对话的上下文（用于理解当前问题的代词和指代）\n"
+                                + "\n".join(parts) + "\n\n"
+                                f"如果当前问题使用了代词（如'它们''这些''其'），"
+                                f"请根据上一轮的查询结果确定具体指代实体，"
+                                f"并在当前 SQL 中加上对应的过滤条件。"
+                            )
+                            break
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        if error_info:
+            error_block = (
+                f"## ⚠️ 上一次 SQL 失败\n"
+                f"上次 SQL: {state.get('sql', 'N/A')}\n"
+                f"失败原因: {error_info}\n"
+                f"请修正错误。只输出修正后的 SQL，不要解释。"
+            )
+        else:
+            error_block = ""
+
+        # 从 state 中获取用户指定的表和系统发现的桥接表
+        explicit_tables_hint = ""
+        mentioned_tables = state.get("explicit_tables", [])
+        bridge_tables = state.get("bridge_tables", [])
+
+        if mentioned_tables:
+            if len(mentioned_tables) == 1 and not bridge_tables:
+                explicit_tables_hint = (
+                    f"\n\n## ⚠️ 用户指定了唯一表：{mentioned_tables[0]}"
+                    f"\n这是一个单表查询！只允许 SELECT FROM {mentioned_tables[0]}。"
+                    f"\n绝对禁止 JOIN 任何其他表！"
+                )
+            else:
+                all_specified = mentioned_tables + bridge_tables
+                table_list_str = ' 和 '.join(mentioned_tables)
+                bridge_list_str = ('（需要桥接表 ' + ', '.join(bridge_tables) + ' 来连接）') if bridge_tables else ''
+                n_allowed = len(all_specified)
+                explicit_tables_hint = (
+                    f"\n\n## ⚠️ 用户指定了 {len(mentioned_tables)} 张表：{table_list_str}"
+                    f"{bridge_list_str}"
+                    f"\n只允许使用这 {n_allowed} 张表进行查询。"
+                    f"\n绝对禁止引入其他表！"
+                    f"\n\n关于 WHERE 条件：查询中提到的列名，请优先使用用户指定表中的该列"
+                    f"（如 {mentioned_tables[0]}.列名），不要自动换成其他表的同名列。"
+                )
+
+        prompt = SQL_GEN_PROMPT.format(
+            history=history, schema=schema, question=question, error_block=error_block
+        ) + previous_context_hint + explicit_tables_hint + fewshot
+
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        sql = _clean_sql_output(response.content.strip())
+
+        logger.info(f"[SQL-Gen] 生成 SQL (retry={retry_count}): {sql[:200]}")
+        return {"sql": sql, "retry_count": retry_count}
+    return generate_sql_node
 
 
 async def validate_sql_node(state: AgentState) -> dict:
@@ -477,26 +731,45 @@ async def validate_sql_node(state: AgentState) -> dict:
     if "FROM" not in normalized:
         return {"error_info": "SQL 缺少 FROM 子句，请补充。"}
 
-    logger.info("[Validate] SQL 校验通过")
+    # 统计 SQL 中涉及的表数量（仅用于日志记录，不做硬拦截）
+    _table_matches = re.findall(
+        r'\b(?:FROM|JOIN)\s+(\w+)', cleaned, re.IGNORECASE
+    )
+    _table_count = len(set(_table_matches))
+
+    logger.info(f"[Validate] SQL 校验通过 (涉及 {_table_count} 张表: {', '.join(sorted(set(_table_matches)))})")
     return {"error_info": ""}
 
 
-async def execute_sql_node(state: AgentState) -> dict:
-    """执行 SQL 并返回格式化结果。"""
-    sql = state["sql"]
-    result = execute_access_query(sql)
-    formatted = format_query_result(result)
+def make_execute_sql_node(memory: QueryMemory | None = None):
+    """执行 SQL 并返回格式化结果。成功后记录到 QueryMemory。"""
+    async def execute_sql_node(state: AgentState) -> dict:
+        sql = state["sql"]
+        result = execute_access_query(sql)
+        formatted = format_query_result(result)
 
-    if result["ok"]:
-        logger.info(f"[Execute] 查询成功，{result['row_count']} 行")
-        return {"query_result": formatted, "error_info": ""}
-    else:
-        logger.warning(f"[Execute] 查询失败: {result['error']}")
-        return {
-            "query_result": "",
-            "error_info": result["error"],
-            "retry_count": state.get("retry_count", 0) + 1,
-        }
+        if result["ok"]:
+            logger.info(f"[Execute] 查询成功，{result['row_count']} 行")
+            # 记录成功查询到 QueryMemory
+            if memory is not None and result["row_count"] > 0:
+                try:
+                    memory.add(
+                        question=state.get("question", ""),
+                        rewritten=state.get("rewritten_query", ""),
+                        sql=sql,
+                        tables=state.get("explicit_tables", []),
+                    )
+                except Exception as e:
+                    logger.warning(f"[Execute] 查询记忆记录失败: {e}")
+            return {"query_result": formatted, "error_info": ""}
+        else:
+            logger.warning(f"[Execute] 查询失败: {result['error']}")
+            return {
+                "query_result": "",
+                "error_info": result["error"],
+                "retry_count": state.get("retry_count", 0) + 1,
+            }
+    return execute_sql_node
 
 
 async def synthesize_answer_node(state: AgentState) -> dict:

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from .config import (
     logger, KB_DIR, CHROMA_DIR, SUMMARY_CACHE_PATH,
     SCHEMA_JSON_PATH, TABLE_DESC_JSON_PATH, SCHEMA_CHROMA_DIR,
+    QUERY_MEMORY_PATH,
 )
 
 from langchain.messages import HumanMessage
@@ -29,6 +30,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from .knowledge_base import RagKnowledgeBase
 from .schema_indexer import SchemaIndexer
+from .query_memory import QueryMemory
+from .entity_router import EntityRouter
 from .graph_builder import build_agent_graph
 
 
@@ -44,6 +47,8 @@ class RagService:
     def __init__(self):
         self.kb: RagKnowledgeBase | None = None
         self.schema_indexer: SchemaIndexer | None = None
+        self.query_memory: QueryMemory | None = None
+        self.entity_router: EntityRouter | None = None
         self.agent: CompiledStateGraph | None = None
         self._init_lock = asyncio.Lock()
 
@@ -70,7 +75,19 @@ class RagService:
             )
             await self.schema_indexer.initialize()
 
-            self.agent = build_agent_graph(self.kb, self.schema_indexer)
+            # QueryMemory 复用 KB 的 embeddings_model
+            self.query_memory = QueryMemory(
+                persist_dir=QUERY_MEMORY_PATH,
+                embeddings_model=self.kb.embeddings_model,
+            )
+            self.query_memory.initialize()
+
+            # EntityRouter 无需模型，直接实例化
+            self.entity_router = EntityRouter()
+
+            self.agent = build_agent_graph(self.kb, self.schema_indexer,
+                                           self.query_memory,
+                                           self.entity_router)
             logger.info("[Service] RagService 初始化完成")
 
     async def chat(self, question: str, thread_id: str = "default") -> str:
