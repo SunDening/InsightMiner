@@ -1,0 +1,2851 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kb_rag — 三路混合检索 RAG 系统架构</title>
+<style>
+/* ════════════════════════════════════════════════════════
+   设计系统
+   ════════════════════════════════════════════════════════
+   字体：Inter (标题/英文) + Noto Sans SC (中文正文)
+   背景：#0A0D16 → #101526
+   面板：#151B2E → #1A2142
+   路径色：语义=#4B8BFF  BM25=#FF8A4B  图=#A855F7
+           融合=#22D3A0  精排=#F472B6  LLM=#FBBF24
+   间距：8px base  圆角：12px/8px/6px
+   ──────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg-primary:   #0A0D16;
+  --bg-secondary: #151B2E;
+  --bg-card:      #1A2142;
+  --bg-hover:     #1E2650;
+  --border:       #283060;
+  --border-light: rgba(255,255,255,0.06);
+
+  --text-primary:   #E8EDFF;
+  --text-secondary: #8892B8;
+  --text-muted:     #4A5280;
+
+  --color-dense:   #4B8BFF;
+  --color-dense-bg:rgba(75,139,255,0.10);
+  --color-bm25:    #FF8A4B;
+  --color-bm25-bg: rgba(255,138,75,0.10);
+  --color-graph:   #A855F7;
+  --color-graph-bg:rgba(168,85,247,0.10);
+  --color-fusion:  #22D3A0;
+  --color-rerank:  #F472B6;
+  --color-llm:     #FBBF24;
+
+  --radius-card: 12px;
+  --radius-tag:  6px;
+
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-body:    'Noto Sans SC', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Consolas', monospace;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 0;
+  background-image:
+    radial-gradient(ellipse at 15% 5%, rgba(75,139,255,0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at 85% 95%, rgba(168,85,247,0.05) 0%, transparent 50%);
+}
+
+.container {
+  width: 100%;
+  max-width: 1400px;
+  padding: 0 28px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Header
+   ════════════════════════════════════════════════════════ */
+
+header {
+  text-align: center;
+  padding: 52px 20px 36px;
+  position: relative;
+}
+
+header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  max-width: 500px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border), transparent);
+}
+
+header .repo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 6px 16px;
+  margin-bottom: 20px;
+  letter-spacing: 0.3px;
+}
+
+header .repo-badge .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-fusion);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+header h1 {
+  font-family: var(--font-display);
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.2;
+  background: linear-gradient(135deg, #E8EDFF 20%, var(--color-dense) 45%, var(--color-graph) 75%, var(--color-fusion) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+header .sub {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+header .tech-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+header .tech-badges span {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Architecture Overview — 系统总览
+   ════════════════════════════════════════════════════════ */
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  margin: 48px 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-title .sec-num {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 2px 10px;
+  border-radius: var(--radius-tag);
+}
+
+.overview {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  margin-bottom: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.overview::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-dense), var(--color-bm25), var(--color-graph), var(--color-fusion), var(--color-rerank), var(--color-llm));
+}
+
+.ov-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ov-row + .ov-row {
+  margin-top: 12px;
+}
+
+.ov-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  min-width: 60px;
+  text-align: center;
+}
+
+.ov-node .ov-name {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.ov-node .ov-desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.ov-node.highlight-dense  { border-color: rgba(75,139,255,0.25); background: rgba(75,139,255,0.06); }
+.ov-node.highlight-bm25   { border-color: rgba(255,138,75,0.25); background: rgba(255,138,75,0.06); }
+.ov-node.highlight-graph  { border-color: rgba(168,85,247,0.25); background: rgba(168,85,247,0.06); }
+.ov-node.highlight-fusion { border-color: rgba(34,211,160,0.25); background: rgba(34,211,160,0.06); }
+.ov-node.highlight-rerank { border-color: rgba(244,114,182,0.25); background: rgba(244,114,182,0.06); }
+.ov-node.highlight-llm    { border-color: rgba(251,191,36,0.25);  background: rgba(251,191,36,0.06); }
+
+.ov-arrow {
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ov-bracket {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+}
+
+.ov-path-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 4px 0 2px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Pipeline Flow
+   ════════════════════════════════════════════════════════ */
+
+.flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.step {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  width: 100%;
+  transition: box-shadow 0.3s;
+  position: relative;
+}
+
+.step:hover {
+  box-shadow: 0 0 40px rgba(75,139,255,0.03);
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.step-number {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.step-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.step-title small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+
+.arrow-connector {
+  width: 2px;
+  height: 28px;
+  background: linear-gradient(180deg, var(--border), var(--border));
+  position: relative;
+  flex-shrink: 0;
+}
+
+.arrow-connector::after {
+  content: '';
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--border);
+}
+
+/* ════════════════════════════════════════════════════════
+   Tags
+   ════════════════════════════════════════════════════════ */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--radius-tag);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.tag-sm {
+  font-size: 9px;
+  padding: 2px 7px;
+}
+
+.tag-dense   { background: var(--color-dense-bg);  color: var(--color-dense);  border: 1px solid rgba(75,139,255,0.2); }
+.tag-bm25    { background: var(--color-bm25-bg);   color: var(--color-bm25);   border: 1px solid rgba(255,138,75,0.2); }
+.tag-graph   { background: var(--color-graph-bg);  color: var(--color-graph);  border: 1px solid rgba(168,85,247,0.2); }
+.tag-fusion  { background: rgba(34,211,160,0.08);  color: var(--color-fusion); border: 1px solid rgba(34,211,160,0.2); }
+.tag-rerank  { background: rgba(244,114,182,0.08); color: var(--color-rerank); border: 1px solid rgba(244,114,182,0.2); }
+.tag-llm     { background: rgba(251,191,36,0.08);  color: var(--color-llm);    border: 1px solid rgba(251,191,36,0.2); }
+
+/* ════════════════════════════════════════════════════════
+   Step 1 — Intent Classification
+   ════════════════════════════════════════════════════════ */
+
+.intent-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.intent-card {
+  flex: 1;
+  min-width: 170px;
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  transition: all 0.25s;
+}
+
+.intent-card:hover {
+  border-color: var(--color-llm);
+  box-shadow: 0 0 20px rgba(251,191,36,0.06);
+}
+
+.intent-card .label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.intent-card .label.query  { color: var(--color-dense); }
+.intent-card .label.intent { color: var(--color-bm25); }
+.intent-card .label.entity { color: var(--color-graph); }
+
+.intent-card .value {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.code-snip {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-secondary);
+}
+
+.code-snip .hl-k { color: var(--color-dense); }
+.code-snip .hl-v { color: var(--color-fusion); }
+.code-snip .hl-s { color: var(--color-bm25); }
+.code-snip .hl-c { color: var(--text-muted); }
+
+/* ════════════════════════════════════════════════════════
+   Step 2 — Three Retrieval Paths
+   ════════════════════════════════════════════════════════ */
+
+.retrieval-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.retrieval-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: all 0.25s;
+}
+
+.retrieval-card:hover {
+  transform: translateY(-2px);
+}
+
+.retrieval-card .card-head {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-light);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.retrieval-card.card-dense .card-head { border-bottom-color: rgba(75,139,255,0.15); }
+.retrieval-card.card-bm25  .card-head { border-bottom-color: rgba(255,138,75,0.15); }
+.retrieval-card.card-graph .card-head { border-bottom-color: rgba(168,85,247,0.15); }
+
+.retrieval-card .card-body {
+  padding: 10px 16px 14px;
+}
+
+.retrieval-card .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.retrieval-card .p-row:last-child { border-bottom: none; }
+.retrieval-card .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.retrieval-card .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 55%; }
+
+.retrieval-card .path-strength {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+}
+
+.retrieval-card .path-strength .ps-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.retrieval-card .path-strength .ps-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+/* ════════════════════════════════════════════════════════
+   Comparison table: dense vs BM25 vs graph
+   ════════════════════════════════════════════════════════ */
+
+.compact-table-wrap {
+  overflow-x: auto;
+  margin-top: 10px;
+}
+
+.compact-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.compact-table th {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.compact-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+
+.compact-table tr:hover td {
+  background: rgba(255,255,255,0.01);
+}
+
+.compact-table .td-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* ════════════════════════════════════════════════════════
+   Step 3 + 4 — RRF Fusion & CrossEncoder
+   ════════════════════════════════════════════════════════ */
+
+.fusion-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.proc-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  transition: all 0.25s;
+}
+
+.proc-card:hover {
+  transform: translateY(-2px);
+}
+
+.proc-card.pc-fusion { border-color: rgba(34,211,160,0.12); }
+.proc-card.pc-rerank { border-color: rgba(244,114,182,0.12); }
+
+.proc-card .pc-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proc-card .pc-formula {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-radius: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  line-height: 1.8;
+}
+
+.proc-card .hl-f { color: var(--color-fusion); font-weight: 600; }
+.proc-card .hl-r { color: var(--color-rerank); font-weight: 600; }
+
+.proc-card .pc-stats {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.pc-stat {
+  flex: 1;
+  min-width: 70px;
+  text-align: center;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+}
+
+.pc-stat .num {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  display: block;
+}
+
+.pc-stat .lbl {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.rrf-worked {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.rrf-worked .rw-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Step 5 — Synthesis & Self-Review
+   ════════════════════════════════════════════════════════ */
+
+.syn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.syn-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  transition: all 0.25s;
+}
+
+.syn-card:hover {
+  transform: translateY(-2px);
+}
+
+.syn-card .syn-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.syn-card .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.syn-card .p-row:last-child { border-bottom: none; }
+.syn-card .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.syn-card .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 55%; }
+
+/* ════════════════════════════════════════════════════════
+   Branch Labels (kb / web / chat / clarify)
+   ════════════════════════════════════════════════════════ */
+
+.branch-labels {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+}
+
+.branch-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 14px;
+  border-radius: var(--radius-tag);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.branch-kb     { background: rgba(75,139,255,0.10); color: var(--color-dense); border: 1px solid rgba(75,139,255,0.2); }
+.branch-web    { background: rgba(148,163,184,0.06); color: #94A3B8;          border: 1px solid rgba(148,163,184,0.12); }
+.branch-chat   { background: rgba(148,163,184,0.06); color: #94A3B8;          border: 1px solid rgba(148,163,184,0.12); }
+.branch-clarify{ background: rgba(148,163,184,0.06); color: #94A3B8;          border: 1px solid rgba(148,163,184,0.12); }
+
+/* ════════════════════════════════════════════════════════
+   Side Paths — chat / clarify / web
+   ════════════════════════════════════════════════════════ */
+
+.side-paths {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.side-path {
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  transition: all 0.25s;
+}
+
+.side-path:hover {
+  border-color: rgba(148,163,184,0.3);
+  background: var(--bg-hover);
+}
+
+.side-path .sp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.side-path .sp-icon {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  background: rgba(148,163,184,0.08);
+  color: #94A3B8;
+}
+
+.side-path .sp-name {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.side-path .sp-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.side-path .sp-flow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  border: 1px solid var(--border-light);
+}
+
+/* ════════════════════════════════════════════════════════
+   System Architecture Details
+   ════════════════════════════════════════════════════════ */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+}
+
+.detail-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: all 0.25s;
+}
+
+.detail-card:hover {
+  transform: translateY(-2px);
+}
+
+.detail-card .dc-head {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.detail-card .dc-body {
+  padding: 10px 14px 14px;
+}
+
+.detail-card .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.detail-card .p-row:last-child { border-bottom: none; }
+.detail-card .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.detail-card .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 55%; }
+
+/* Graph scoring tiers */
+
+.g-tiers {
+  display: flex;
+  flex-direction: column;
+}
+
+.g-tier {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 4px 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.g-tier:first-child { padding-top: 0; }
+.g-tier:last-child { border-bottom: none; padding-bottom: 0; }
+
+.g-tier .gt-score {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  grid-row: 1 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.g-tier .gt-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.g-tier .gt-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Incremental Update Pipeline */
+
+.inc-pipe {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 10px 4px;
+}
+
+.inc-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.inc-step .is-icon {
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.inc-step .is-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 5px;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.inc-step .is-desc {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+.inc-arrow {
+  font-size: 16px;
+  color: var(--text-muted);
+  padding-top: 10px;
+  flex-shrink: 0;
+}
+
+/* Dirty Flag Row */
+
+.dirty-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.dirty-item {
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 3px;
+}
+
+.dirty-item .di-badge {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: #0A0D16;
+}
+
+.dirty-item .di-name {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dirty-item .di-lbl {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+/* ════════════════════════════════════════════════════════
+   Tech Stack Table
+   ════════════════════════════════════════════════════════ */
+
+.tech-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tech-table th {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.tech-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+
+.tech-table tr:hover td {
+  background: rgba(255,255,255,0.01);
+}
+
+.tech-table .tt-layer {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* ════════════════════════════════════════════════════════
+   Legend
+   ════════════════════════════════════════════════════════ */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 36px;
+  padding: 14px 24px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-weight: 500;
+}
+
+.legend-item .swatch {
+  width: 12px; height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* ════════════════════════════════════════════════════════
+   Animations
+   ════════════════════════════════════════════════════════ */
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.step { animation: fadeUp 0.5s ease-out both; }
+.step:nth-child(3) { animation-delay: 0.05s; }
+.step:nth-child(5) { animation-delay: 0.1s; }
+.step:nth-child(7) { animation-delay: 0.15s; }
+.step:nth-child(9) { animation-delay: 0.2s; }
+
+/* ════════════════════════════════════════════════════════
+   Responsive
+   ════════════════════════════════════════════════════════ */
+
+@media (max-width: 1100px) {
+  .retrieval-grid { grid-template-columns: 1fr; }
+  .fusion-grid { grid-template-columns: 1fr; }
+  .syn-grid { grid-template-columns: 1fr; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .side-paths { grid-template-columns: 1fr; }
+  .dirty-row { grid-template-columns: 1fr 1fr; }
+  header h1 { font-size: 32px; }
+}
+
+@media (max-width: 640px) {
+  header h1 { font-size: 26px; }
+  .container { padding: 0 14px; }
+  .step { padding: 18px; }
+  .dirty-row { grid-template-columns: 1fr; }
+  .inc-arrow { display: none; }
+  .ov-row { gap: 4px; }
+  .ov-node { padding: 5px 8px; }
+}
+
+/* ════════════════════════════════════════════════════════
+   ADR Cards — Architecture Decision Records
+   ════════════════════════════════════════════════════════ */
+
+.adr-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.adr-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  transition: all 0.25s;
+}
+
+.adr-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+}
+
+.adr-card .adr-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.adr-card .adr-title .adr-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.adr-card .adr-section {
+  margin-bottom: 8px;
+}
+
+.adr-card .adr-section:last-child {
+  margin-bottom: 0;
+}
+
+.adr-card .adr-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.adr-card .adr-label .adr-arrow { color: var(--color-fusion); margin: 0 2px; }
+
+.adr-card .adr-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ════════════════════════════════════════════════════════
+   Q&A Accordion
+   ════════════════════════════════════════════════════════ */
+
+.qa-category {
+  margin-bottom: 22px;
+}
+
+.qa-category:last-child { margin-bottom: 0; }
+
+.qa-category .qa-cat-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.qa-category .qa-cat-tag {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-light);
+}
+
+.qa-category .qa-cat-tag.tag-arch    { background: rgba(75,139,255,0.06); color: var(--color-dense); border-color: rgba(75,139,255,0.15); }
+.qa-category .qa-cat-tag.tag-ret     { background: rgba(255,138,75,0.06);  color: var(--color-bm25); border-color: rgba(255,138,75,0.15); }
+.qa-category .qa-cat-tag.tag-sys     { background: rgba(168,85,247,0.06);  color: var(--color-graph); border-color: rgba(168,85,247,0.15); }
+.qa-category .qa-cat-tag.tag-llmqa   { background: rgba(251,191,36,0.06);  color: var(--color-llm); border-color: rgba(251,191,36,0.15); }
+.qa-category .qa-cat-tag.tag-prod    { background: rgba(34,211,160,0.06);  color: var(--color-fusion); border-color: rgba(34,211,160,0.15); }
+
+.qa-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  transition: all 0.25s;
+  background: var(--bg-primary);
+}
+
+.qa-item:hover { border-color: rgba(255,255,255,0.1); }
+
+.qa-item summary {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+  line-height: 1.4;
+}
+
+.qa-item summary::-webkit-details-marker { display: none; }
+
+.qa-item summary::before {
+  content: '+';
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  transition: all 0.25s;
+}
+
+.qa-item[open] summary::before {
+  content: '−';
+  background: var(--color-dense);
+  color: #0A0D16;
+  border-color: var(--color-dense);
+}
+
+.qa-item[open] { border-color: rgba(75,139,255,0.15); }
+
+.qa-a {
+  padding: 0 16px 14px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.75;
+}
+
+.qa-a p { margin-bottom: 8px; }
+.qa-a p:last-child { margin-bottom: 0; }
+.qa-a strong { color: var(--text-primary); }
+.qa-a code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: rgba(255,255,255,0.03);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border-light);
+}
+.qa-a .hl-dense { color: var(--color-dense); }
+.qa-a .hl-bm25  { color: var(--color-bm25); }
+.qa-a .hl-graph { color: var(--color-graph); }
+.qa-a .hl-fusion { color: var(--color-fusion); }
+.qa-a .hl-rerank { color: var(--color-rerank); }
+.qa-a .hl-llm   { color: var(--color-llm); }
+
+/* ════════════════════════════════════════════════════════
+   Performance Metrics
+   ════════════════════════════════════════════════════════ */
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.metric-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 14px;
+  text-align: center;
+  transition: all 0.25s;
+}
+
+.metric-card:hover { transform: translateY(-2px); }
+
+.metric-card .mc-num {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  line-height: 1;
+}
+
+.metric-card .mc-unit {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-weight: 500;
+  margin: 2px 0 4px;
+}
+
+.metric-card .mc-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.metric-card .mc-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.metric-card.mc-latency  .mc-num { color: var(--color-dense); }
+.metric-card.mc-thoughput .mc-num { color: var(--color-fusion); }
+.metric-card.mc-memory   .mc-num { color: var(--color-graph); }
+.metric-card.mc-scale    .mc-num { color: var(--color-bm25); }
+
+.latency-bd {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 16px;
+}
+
+.latency-bd .lb-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.latency-bd .lb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.latency-bd .lb-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 130px;
+  text-align: right;
+}
+
+.latency-bd .lb-bar-wrap {
+  flex: 1;
+  height: 18px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+}
+
+.latency-bd .lb-bar {
+  height: 100%;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  color: #0A0D16;
+  min-width: 28px;
+}
+
+.latency-bd .lb-val {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 55px;
+  text-align: right;
+}
+
+/* Failure modes */
+
+.failure-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.failure-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 14px;
+  display: flex;
+  gap: 12px;
+  transition: all 0.25s;
+}
+
+.failure-card:hover { border-color: rgba(255,255,255,0.08); }
+
+.failure-card .fc-icon {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border-light);
+}
+
+.failure-card .fc-body { flex: 1; min-width: 0; }
+
+.failure-card .fc-scenario {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1px;
+}
+
+.failure-card .fc-effect {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.failure-card .fc-mitigation {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  background: var(--bg-primary);
+  border-radius: 4px;
+  padding: 3px 7px;
+  display: inline-block;
+  border: 1px solid var(--border-light);
+  line-height: 1.4;
+}
+
+/* ════════════════════════════════════════════════════════
+   Enhanced responsive
+   ════════════════════════════════════════════════════════ */
+
+@media (max-width: 1100px) {
+  .adr-grid { grid-template-columns: 1fr; }
+  .perf-grid { grid-template-columns: 1fr; }
+  .failure-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .metric-grid { grid-template-columns: 1fr; }
+  .qa-item summary { font-size: 12px; padding: 10px 12px; }
+  .qa-a { padding: 0 12px 12px; font-size: 11px; }
+  .latency-bd .lb-label { min-width: 80px; font-size: 10px; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<!-- ════════════════════════════════════════════════════════
+     Header
+     ════════════════════════════════════════════════════════ -->
+
+<header>
+  <div class="repo-badge">
+    <span class="dot"></span>
+    kb_rag · v2.0
+  </div>
+  <h1>三路混合检索 RAG 系统</h1>
+  <div class="sub">
+    Three-Way Hybrid Retrieval-Augmented Generation
+  </div>
+  <div class="tech-badges">
+    <span style="background:rgba(75,139,255,0.10);color:var(--color-dense);border:1px solid rgba(75,139,255,0.2);">LangGraph</span>
+    <span style="background:rgba(75,139,255,0.10);color:var(--color-dense);border:1px solid rgba(75,139,255,0.2);">ChromaDB</span>
+    <span style="background:rgba(255,138,75,0.10);color:var(--color-bm25);border:1px solid rgba(255,138,75,0.2);">BM25Okapi</span>
+    <span style="background:rgba(168,85,247,0.10);color:var(--color-graph);border:1px solid rgba(168,85,247,0.2);">NetworkX</span>
+    <span style="background:rgba(244,114,182,0.10);color:var(--color-rerank);border:1px solid rgba(244,114,182,0.2);">CrossEncoder</span>
+    <span style="background:rgba(251,191,36,0.10);color:var(--color-llm);border:1px solid rgba(251,191,36,0.2);">DeepSeek</span>
+    <span style="background:rgba(34,211,160,0.10);color:var(--color-fusion);border:1px solid rgba(34,211,160,0.2);">watchdog</span>
+  </div>
+</header>
+
+<!-- ════════════════════════════════════════════════════════
+     Architecture Overview
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">A</span>
+  Architecture Overview
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 系统架构总览</span>
+</div>
+
+<div class="overview">
+  <!-- Row 1: User → Agent → Intent -->
+  <div class="ov-row">
+    <div class="ov-node">
+      <span class="ov-name">User</span>
+      <span class="ov-desc">用户提问</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-llm">
+      <span class="ov-name">LangGraph</span>
+      <span class="ov-desc">State Machine</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-llm">
+      <span class="ov-name">Intent Classifier</span>
+      <span class="ov-desc">LLM: intent + rewrite + entities</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-bracket">
+      <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-display);font-weight:500;">kb · web · chat · clarify</span>
+    </div>
+  </div>
+
+  <!-- Row 2: KB path sub-flow -->
+  <div class="ov-path-label">— KB 主路径 —</div>
+  <div class="ov-row">
+    <div class="ov-node highlight-dense">
+      <span class="ov-name">Dense</span>
+      <span class="ov-desc">ChromaDB · top-20</span>
+    </div>
+    <div class="ov-node highlight-bm25">
+      <span class="ov-name">BM25</span>
+      <span class="ov-desc">Keyword · top-20</span>
+    </div>
+    <div class="ov-node highlight-graph">
+      <span class="ov-name">Graph</span>
+      <span class="ov-desc">BFS · top-40</span>
+    </div>
+    <span class="ov-arrow">⤵</span>
+    <div class="ov-node highlight-fusion">
+      <span class="ov-name">RRF</span>
+      <span class="ov-desc">k=60 · ~45 merged</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-rerank">
+      <span class="ov-name">CrossEncoder</span>
+      <span class="ov-desc">10 → 3</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-llm">
+      <span class="ov-name">LLM</span>
+      <span class="ov-desc">Synthesize · Review</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(34,211,160,0.3);background:rgba(34,211,160,0.06);">
+      <span class="ov-name" style="color:var(--color-fusion);">Output</span>
+      <span class="ov-desc">JSON answer</span>
+    </div>
+  </div>
+
+  <!-- Row 3: Background system -->
+  <div class="ov-path-label">— 后台系统 —</div>
+  <div class="ov-row">
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">KbDirWatcher</span>
+      <span class="ov-desc">watchdog 事件驱动</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">Manifest</span>
+      <span class="ov-desc">v2 · MD5 内容哈希</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">Incremental</span>
+      <span class="ov-desc">delete-then-add · dirty flag</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">Finalize</span>
+      <span class="ov-desc">rebuild BM25/Graph · save</span>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Pipeline
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">B</span>
+  Query Pipeline
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 查询处理流程</span>
+</div>
+
+<div class="flow">
+
+<!-- ───────── Step 1: Intent Classification ──────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">1</div>
+    <div class="step-title">
+      Intent Classification &amp; Query Rewriting
+      <small>意图分类 · 查询重写 · 实体提取</small>
+    </div>
+    <span class="tag tag-llm" style="margin-left:auto;">LLM</span>
+  </div>
+
+  <div class="intent-grid">
+    <div class="intent-card">
+      <div class="label intent">Intent</div>
+      <div class="value">
+        四分类：<strong style="color:var(--color-dense);">kb</strong>（默认） ·
+        <span style="color:#94A3B8;">web</span> ·
+        <span style="color:#94A3B8;">chat</span> ·
+        <span style="color:#94A3B8;">clarify</span>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-muted);font-family:var(--font-display);">
+        优先级: web &gt; clarify &gt; <strong>kb</strong> &gt; chat
+      </div>
+    </div>
+    <div class="intent-card">
+      <div class="label query">Query Rewriting</div>
+      <div class="value">
+        模糊时间 → 具体日期<br>
+        代词 → 显式实体<br>
+        口语 → 检索友好措辞
+      </div>
+    </div>
+    <div class="intent-card">
+      <div class="label entity">Entity Extraction</div>
+      <div class="value">
+        专有名词 · 人名/地名<br>
+        技术术语 · 产品名<br>
+        仅 kb/web 意图有效
+      </div>
+    </div>
+  </div>
+
+  <div class="code-snip"><span class="hl-c">// One-shot LLM call — 同时完成三项任务</span>
+{
+  <span class="hl-k">"intent"</span>:          <span class="hl-s">"kb"</span>,
+  <span class="hl-k">"rewritten_query"</span>: <span class="hl-s">"CME 事件交易规则 2025"</span>,
+  <span class="hl-k">"entities"</span>:        [<span class="hl-s">"CME"</span>, <span class="hl-s">"事件交易"</span>, <span class="hl-s">"规则"</span>]
+}</div>
+</div>
+
+<div class="arrow-connector"></div>
+
+<!-- ───────── Branch Selector ───────────── -->
+
+<div class="branch-labels">
+  <span class="branch-label branch-kb">kb (default)</span>
+  <span class="branch-label branch-web">web</span>
+  <span class="branch-label branch-chat">chat</span>
+  <span class="branch-label branch-clarify">clarify</span>
+</div>
+
+<div class="arrow-connector"></div>
+
+<!-- ───────── Step 2: Three Retrieval Paths ──────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">2</div>
+    <div class="step-title">
+      Three-Way Parallel Retrieval
+      <small>三路并行检索</small>
+    </div>
+    <span class="tag tag-dense" style="margin-left:auto;">asyncio.gather</span>
+  </div>
+
+  <div class="retrieval-grid">
+    <div class="retrieval-card card-dense">
+      <div class="card-head">
+        <span>Semantic Search</span>
+        <span class="tag tag-dense tag-sm">top-20</span>
+      </div>
+      <div class="card-body">
+        <div class="p-row"><span class="p-lbl">Engine</span><span class="p-val">ChromaDB (langchain-chroma)</span></div>
+        <div class="p-row"><span class="p-lbl">Embedding</span><span class="p-val">all-MiniLM-L6-v2 (384d)</span></div>
+        <div class="p-row"><span class="p-lbl">Distance</span><span class="p-val">L2 · similarity_search_with_score</span></div>
+        <div class="p-row"><span class="p-lbl">Chunk Lookup</span><span class="p-val">chunk_id → _chunk_ids.index()</span></div>
+        <div class="path-strength">
+          <div class="ps-label">Strengths</div>
+          <div class="ps-text">捕获语义相似但词汇不重叠的匹配 · 对同义词/近义词鲁棒 · 跨语言概念匹配</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="retrieval-card card-bm25">
+      <div class="card-head">
+        <span>Keyword Search</span>
+        <span class="tag tag-bm25 tag-sm">top-20</span>
+      </div>
+      <div class="card-body">
+        <div class="p-row"><span class="p-lbl">Engine</span><span class="p-val">rank-bm25 (BM25Okapi)</span></div>
+        <div class="p-row"><span class="p-lbl">Tokenizer</span><span class="p-val">中英混合 · unigram + bigram</span></div>
+        <div class="p-row"><span class="p-lbl">Index</span><span class="p-val">bm25_index.pkl (pickle)</span></div>
+        <div class="p-row"><span class="p-lbl">Token Ex.</span><span class="p-val">"知识库" → ["知识","识库","知识库"]</span></div>
+        <div class="path-strength">
+          <div class="ps-label">Strengths</div>
+          <div class="ps-text">精确关键词匹配 · 对罕见术语/代码片段友好 · 不依赖训练数据分布</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="retrieval-card card-graph">
+      <div class="card-head">
+        <span>Graph Search</span>
+        <span class="tag tag-graph tag-sm">top-40</span>
+      </div>
+      <div class="card-body">
+        <div class="p-row"><span class="p-lbl">Engine</span><span class="p-val">NetworkX (entity co-occurrence)</span></div>
+        <div class="p-row"><span class="p-lbl">Entities</span><span class="p-val">启发式 (index) + LLM (query)</span></div>
+        <div class="p-row"><span class="p-lbl">Traversal</span><span class="p-val">BFS · cutoff=3</span></div>
+        <div class="p-row"><span class="p-lbl">Chaining</span><span class="p-val">adjacent chunk +0.1</span></div>
+        <div class="p-row"><span class="p-lbl">Scoring</span><span class="p-val">exact=3.0 / neighbor=2.0 / expanded=1.0/d</span></div>
+        <div class="path-strength">
+          <div class="ps-label">Strengths</div>
+          <div class="ps-text">桥接语义鸿沟（Apple ↔ Tim Cook）· 跨 chunk 实体关联 · 补全 dense/BM25 盲区</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison Table -->
+  <div class="compact-table-wrap">
+    <table class="compact-table">
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th style="color:var(--color-dense);">Semantic (Dense)</th>
+          <th style="color:var(--color-bm25);">Keyword (BM25)</th>
+          <th style="color:var(--color-graph);">Entity Graph</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="td-label">Matching</td>
+          <td>语义空间距离</td>
+          <td>词汇精确匹配</td>
+          <td>实体共现关系</td>
+        </tr>
+        <tr>
+          <td class="td-label">Recall</td>
+          <td>高 (语义相近即可)</td>
+          <td>低 (必须词重叠)</td>
+          <td>中 (通过实体跳转)</td>
+        </tr>
+        <tr>
+          <td class="td-label">Precision</td>
+          <td>中 (可能语义漂移)</td>
+          <td>高 (词级精确)</td>
+          <td>高 (实体级精确)</td>
+        </tr>
+        <tr>
+          <td class="td-label">Training</td>
+          <td>需要预训练模型</td>
+          <td>无需训练</td>
+          <td>无需训练</td>
+        </tr>
+        <tr>
+          <td class="td-label">Index Time</td>
+          <td>O(n) embedding</td>
+          <td>O(n) tokenize</td>
+          <td>O(n²) entity pair</td>
+        </tr>
+        <tr>
+          <td class="td-label">Cold Start</td>
+          <td>依赖模型</td>
+          <td>即时可用</td>
+          <td>需构建图</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="arrow-connector" style="background:linear-gradient(180deg,var(--border),var(--color-fusion));"></div>
+<div class="arrow-connector" style="background:linear-gradient(180deg,var(--color-fusion),var(--color-fusion));height:12px;"></div>
+
+<!-- ───────── Step 3 + 4: RRF + CrossEncoder ────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">3</div>
+    <div class="step-title">
+      RRF Fusion &amp; CrossEncoder
+      <small>倒数排名融合 + 精排</small>
+    </div>
+    <span class="tag tag-fusion" style="margin-left:auto;">k=60</span>
+  </div>
+
+  <div class="fusion-grid">
+    <div class="proc-card pc-fusion">
+      <div class="pc-title">
+        <span style="color:var(--color-fusion);">RRF</span> Reciprocal Rank Fusion
+      </div>
+      <div class="pc-formula">
+        RRF_score(chunk) = <span class="hl-f">Σ</span> 1 / (k + rank<sub>i</sub>)
+        <br><span style="font-family:var(--font-body);color:var(--text-muted);">— 只依赖排名位置，不依赖原始分数</span>
+      </div>
+      <div class="pc-stats">
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-dense);">20</span>
+          <span class="lbl">Dense</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-bm25);">20</span>
+          <span class="lbl">BM25</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-graph);">40</span>
+          <span class="lbl">Graph</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-fusion);">80</span>
+          <span class="lbl">Input</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num">~45</span>
+          <span class="lbl">Merged</span>
+        </div>
+      </div>
+
+      <div class="rrf-worked">
+        <div class="rw-title">Worked Example — 3 chunks, k=60</div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>Chunk</th>
+              <th style="color:var(--color-dense);">Dense Rank</th>
+              <th style="color:var(--color-bm25);">BM25 Rank</th>
+              <th style="color:var(--color-graph);">Graph Rank</th>
+              <th style="color:var(--color-fusion);">RRF Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="td-label">Chunk A</td>
+              <td>1 (1/61=0.0164)</td>
+              <td>3 (1/63=0.0159)</td>
+              <td>—</td>
+              <td><strong style="color:var(--color-fusion);">0.0323</strong></td>
+            </tr>
+            <tr>
+              <td class="td-label">Chunk B</td>
+              <td>5 (1/65=0.0154)</td>
+              <td>—</td>
+              <td>1 (1/61=0.0164)</td>
+              <td><strong style="color:var(--color-fusion);">0.0318</strong></td>
+            </tr>
+            <tr>
+              <td class="td-label">Chunk C</td>
+              <td>—</td>
+              <td>1 (1/61=0.0164)</td>
+              <td>—</td>
+              <td><strong style="color:var(--color-fusion);">0.0164</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="proc-card pc-rerank">
+      <div class="pc-title">
+        <span style="color:var(--color-rerank);">CE</span> CrossEncoder Re-ranking
+      </div>
+      <div class="pc-formula">
+        score(q, d) = model([<span class="hl-r">CLS</span>] q [<span class="hl-r">SEP</span>] d[:1024] [<span class="hl-r">SEP</span>])
+        <br><span style="font-family:var(--font-body);color:var(--text-muted);">— BAAI/bge-reranker-base · pairwise scoring</span>
+      </div>
+      <div class="pc-stats">
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-rerank);">10</span>
+          <span class="lbl">RRF Top-N</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-rerank);">3</span>
+          <span class="lbl">Final Top-K</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num">~1s</span>
+          <span class="lbl">Batch (10 pairs)</span>
+        </div>
+      </div>
+      <div class="pc-formula" style="margin-top:10px;font-size:11px;">
+        <span style="color:var(--text-muted);">// Input pair</span>
+        q: <span style="color:var(--color-dense);">"CME 事件交易规则"</span>
+        d: <span style="color:var(--color-bm25);">"CME 事件交易是一种..."</span>
+        <br>→ score: <span style="color:var(--color-rerank);font-weight:600;">0.872</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-connector" style="background:linear-gradient(180deg,var(--border),var(--color-llm));height:28px;"></div>
+
+<!-- ───────── Step 5: LLM Synthesis ────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">4</div>
+    <div class="step-title">
+      Answer Synthesis &amp; Self-Review
+      <small>答案合成 · 质量审计</small>
+    </div>
+    <span class="tag tag-llm" style="margin-left:auto;">DeepSeek</span>
+  </div>
+
+  <div class="syn-grid">
+    <div class="syn-card" style="border-color:rgba(251,191,36,0.15);">
+      <div class="syn-title">
+        <span style="color:var(--color-llm);">LLM</span> Synthesize Answer
+        <span class="tag tag-llm tag-sm" style="margin-left:auto;">SYNTHESIZE_PROMPT</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Input</span>
+        <span class="p-val">question + context + re-ranked docs + history</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Temperature</span>
+        <span class="p-val">0.2</span>
+      </div>
+      <div class="code-snip" style="margin-top:8px;font-size:11px;">{
+  <span class="hl-k">"answer"</span>:          <span class="hl-s">"CME 事件交易是..."</span>,
+  <span class="hl-k">"rewritten_query"</span>: <span class="hl-s">"CME 事件交易规则 2025"</span>,
+  <span class="hl-k">"data_sources"</span>: [
+    { <span class="hl-k">"source_type"</span>: <span class="hl-s">"knowledge_base"</span>,
+      <span class="hl-k">"evidences"</span>: [
+        { <span class="hl-k">"evidence"</span>: <span class="hl-s">"CME 事件交易是一种..."</span>,
+          <span class="hl-k">"score"</span>: <span class="hl-v">0.95</span> }
+      ] }
+  ]
+}</div>
+    </div>
+
+    <div class="syn-card">
+      <div class="syn-title">
+        <span style="color:var(--color-llm);">LLM</span> Self-Review Loop
+        <span class="tag tag-llm tag-sm" style="margin-left:auto;">REVIEW_PROMPT</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Judge</span>
+        <span class="p-val">LLM-as-judge · 1–5 scoring</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Pass</span>
+        <span class="p-val" style="color:var(--color-fusion);font-weight:600;">score ≥ 3 → END</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Retry</span>
+        <span class="p-val" style="color:var(--color-bm25);">score &lt; 3 → re-synthesize</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Max Retries</span>
+        <span class="p-val">2</span>
+      </div>
+
+      <div class="rrf-worked" style="margin-top:10px;">
+        <div class="rw-title">Review Criteria</div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>Score</th>
+              <th>Meaning</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="td-label">5</td><td>Perfect</td><td style="color:var(--color-fusion);">✓ Accept</td></tr>
+            <tr><td class="td-label">4</td><td>Good</td><td style="color:var(--color-fusion);">✓ Accept</td></tr>
+            <tr><td class="td-label">3</td><td>Acceptable</td><td style="color:var(--color-fusion);">✓ Accept</td></tr>
+            <tr><td class="td-label">2</td><td>Deficient</td><td style="color:var(--color-bm25);">⟳ Retry</td></tr>
+            <tr><td class="td-label">1</td><td>Severe Error</td><td style="color:var(--color-bm25);">⟳ Retry</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /.flow -->
+
+<!-- ════════════════════════════════════════════════════════
+     Side Paths
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">C</span>
+  Alternative Paths
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— chat / clarify / web 分支</span>
+</div>
+
+<div class="step" style="padding:20px 28px;">
+  <div class="side-paths">
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon">C</div>
+        <span class="sp-name">Chat (闲聊)</span>
+      </div>
+      <div class="sp-desc">问候寒暄、自我介绍等非知识类对话。LLM 直接回答，不走检索。</div>
+      <div class="sp-flow">CHAT_PROMPT → LLM → JSON answer</div>
+    </div>
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon">?</div>
+        <span class="sp-name">Clarify (澄清)</span>
+      </div>
+      <div class="sp-desc">问题模糊或存在歧义时，主动反问引导用户补充上下文。</div>
+      <div class="sp-flow">CLARIFY_PROMPT → LLM → 反问句</div>
+    </div>
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon">W</div>
+        <span class="sp-name">Web Search</span>
+      </div>
+      <div class="sp-desc">用户明确要求上网搜索时，调用 Tavily API 获取实时结果。</div>
+      <div class="sp-flow">Tavily search → CrossEncoder rerank → SYNTHESIZE_PROMPT</div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     System Architecture — Tech Stack
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">D</span>
+  System Architecture
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 技术栈 · 分块策略 · 增量更新 · 图检索</span>
+</div>
+
+<div class="step" style="padding:24px 28px;">
+  <div style="font-family:var(--font-display);font-size:15px;font-weight:600;margin-bottom:14px;">Tech Stack</div>
+  <div class="compact-table-wrap">
+    <table class="tech-table">
+      <thead>
+        <tr><th>Layer</th><th>Component</th><th>Version</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-llm);">Orchestration</td>
+          <td>langgraph</td>
+          <td>≥0.2.0</td>
+          <td>State machine with InMemorySaver checkpoint</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-dense);">Vector Store</td>
+          <td>chromadb + langchain-chroma</td>
+          <td>≥1.5.9</td>
+          <td>Dense embedding index, SQLite persistence</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-dense);">Embedding</td>
+          <td>all-MiniLM-L6-v2</td>
+          <td>—</td>
+          <td>384-dim sentence transformer</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-bm25);">Sparse Index</td>
+          <td>rank-bm25 (BM25Okapi)</td>
+          <td>≥0.2.2</td>
+          <td>Keyword retrieval with CJK tokenizer</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-graph);">Knowledge Graph</td>
+          <td>networkx</td>
+          <td>≥3.4.0</td>
+          <td>Entity co-occurrence graph, BFS traversal</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-rerank);">Re-ranker</td>
+          <td>BAAI/bge-reranker-base</td>
+          <td>—</td>
+          <td>CrossEncoder, sentence-transformers</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-llm);">LLM</td>
+          <td>DeepSeek (API) / Ollama (local)</td>
+          <td>—</td>
+          <td>Intent classification + answer synthesis + review</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-fusion);">FS Watcher</td>
+          <td>watchdog</td>
+          <td>≥6.0.0</td>
+          <td>OS-level file events (ReadDirectoryChangesW / inotify)</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-fusion);">Splitter</td>
+          <td>RecursiveCharacterTextSplitter</td>
+          <td>—</td>
+          <td>chunk_size=512, chunk_overlap=64</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Detail Grid — Chunk · Manifest · Graph Scoring
+     ════════════════════════════════════════════════════════ -->
+
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px;">
+
+  <!-- Chunking Strategy -->
+  <div class="detail-card">
+    <div class="dc-head">
+      <span>Chunking Strategy</span>
+      <span class="tag tag-dense tag-sm">512 / 64</span>
+    </div>
+    <div class="dc-body">
+      <div class="p-row"><span class="p-lbl">Splitter</span><span class="p-val">RecursiveCharacterTextSplitter</span></div>
+      <div class="p-row"><span class="p-lbl">Split chars</span><span class="p-val">\n\n → \n → 。 → .</span></div>
+      <div class="p-row"><span class="p-lbl">Chunk Size</span><span class="p-val">512 characters</span></div>
+      <div class="p-row"><span class="p-lbl">Overlap</span><span class="p-val">64 characters</span></div>
+      <div class="p-row"><span class="p-lbl">Chunk ID</span><span class="p-val">{doc_id}_{idx:06d}</span></div>
+      <div class="p-row"><span class="p-lbl">Doc ID</span><span class="p-val">md5(fname)[:8]</span></div>
+      <div class="code-snip" style="margin-top:8px;font-size:11px;"><span class="hl-c">// Chunk ID example</span>
+<span class="hl-v">a1b2c3d4</span>_000042
+<span class="hl-c">// Maps: doc → ChromaDB → BM25 idx</span></div>
+    </div>
+  </div>
+
+  <!-- Manifest -->
+  <div class="detail-card">
+    <div class="dc-head">
+      <span>Manifest (v2)</span>
+      <span class="tag tag-bm25 tag-sm">MD5</span>
+    </div>
+    <div class="dc-body">
+      <div class="p-row"><span class="p-lbl">Format</span><span class="p-val">chroma_db/.manifest.json</span></div>
+      <div class="p-row"><span class="p-lbl">Per file</span><span class="p-val">mtime + MD5 content hash</span></div>
+      <div class="p-row"><span class="p-lbl">Version check</span><span class="p-val" style="color:var(--color-fusion);">version != 2 → full rebuild</span></div>
+      <div class="p-row"><span class="p-lbl">Validation</span><span class="p-val">file set + hash + summary_count</span></div>
+      <div class="code-snip" style="margin-top:8px;font-size:11px;">{
+  <span class="hl-k">"version"</span>: <span class="hl-v">2</span>,
+  <span class="hl-k">"files"</span>: {
+    <span class="hl-s">"doc.txt"</span>: {
+      <span class="hl-k">"mtime"</span>: <span class="hl-v">1234.0</span>,
+      <span class="hl-k">"hash"</span>: <span class="hl-s">"md5hex..."</span>
+    }
+  },
+  <span class="hl-k">"summary_count"</span>: <span class="hl-v">10</span>
+}</div>
+    </div>
+  </div>
+
+  <!-- Graph Scoring Tiers -->
+  <div class="detail-card">
+    <div class="dc-head">
+      <span>Graph Scoring</span>
+      <span class="tag tag-graph tag-sm">BFS cutoff=3</span>
+    </div>
+    <div class="dc-body">
+      <div class="g-tiers">
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-dense);">3.0</span>
+          <span class="gt-label">Exact Match</span>
+          <span class="gt-desc">Query entity directly appears in chunk</span>
+        </div>
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-bm25);">2.0</span>
+          <span class="gt-label">Neighbor (d=1)</span>
+          <span class="gt-desc">Entity at BFS distance 1 connects to chunk</span>
+        </div>
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-graph);">1.0/d</span>
+          <span class="gt-label">Expanded (d≥2)</span>
+          <span class="gt-desc">Score decays with distance: ½, ⅓, …</span>
+        </div>
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-fusion);">+0~0.5</span>
+          <span class="gt-label">Co-occurrence Bonus</span>
+          <span class="gt-desc">0.5 × weight/(weight+5)</span>
+        </div>
+        <div class="g-tier" style="border-bottom:none;padding-bottom:0;">
+          <span class="gt-score" style="color:var(--color-rerank);">+0.1</span>
+          <span class="gt-label">Chunk Chaining</span>
+          <span class="gt-desc">Adjacent chunk in same doc gets bonus</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Incremental Update Pipeline
+     ════════════════════════════════════════════════════════ -->
+
+<div class="step" style="margin-top:14px;">
+  <div class="step-header">
+    <div class="step-number">5</div>
+    <div class="step-title">
+      Incremental Update Pipeline
+      <small>增量更新流水线</small>
+    </div>
+    <span class="tag tag-fusion" style="margin-left:auto;">watchdog</span>
+  </div>
+
+  <!-- Watchdog Pipeline Flow -->
+  <div class="inc-pipe">
+    <div class="inc-step">
+      <div class="is-icon" style="background:var(--color-dense-bg);color:var(--color-dense);border-color:rgba(75,139,255,0.25);">W</div>
+      <span class="is-label">KbDirWatcher</span>
+      <span class="is-desc">watchdog Observer<br>事件驱动 · 2s debounce</span>
+    </div>
+    <span class="inc-arrow">→</span>
+    <div class="inc-step">
+      <div class="is-icon" style="background:var(--color-bm25-bg);color:var(--color-bm25);border-color:rgba(255,138,75,0.25);">Δ</div>
+      <span class="is-label">_detect_file_changes</span>
+      <span class="is-desc">MD5 vs manifest<br>→ new / modified / deleted</span>
+    </div>
+    <span class="inc-arrow">→</span>
+    <div class="inc-step">
+      <div class="is-icon" style="background:var(--color-graph-bg);color:var(--color-graph);border-color:rgba(168,85,247,0.25);">±</div>
+      <span class="is-label">_apply_file_changes</span>
+      <span class="is-desc">delete old → add new<br>threading.Lock</span>
+    </div>
+    <span class="inc-arrow">→</span>
+    <div class="inc-step">
+      <div class="is-icon" style="background:rgba(34,211,160,0.15);color:var(--color-fusion);border-color:rgba(34,211,160,0.25);">⟳</div>
+      <span class="is-label">_finalize_index</span>
+      <span class="is-desc">rebuild BM25+Graph<br>save manifest</span>
+    </div>
+  </div>
+
+  <!-- Dirty Flags -->
+  <div class="dirty-row">
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-bm25);">B</span>
+      <span class="di-name">BM25</span>
+      <span class="di-lbl">dirty on change → rebuilt</span>
+    </div>
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-graph);">G</span>
+      <span class="di-name">Graph</span>
+      <span class="di-lbl">dirty on change → rebuilt</span>
+    </div>
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-dense);">C</span>
+      <span class="di-name">ChromaDB</span>
+      <span class="di-lbl">delete-then-add in-place</span>
+    </div>
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-llm);">M</span>
+      <span class="di-name">Manifest</span>
+      <span class="di-lbl">saved → next start reuse</span>
+    </div>
+  </div>
+
+  <!-- Update call chain -->
+  <div class="code-snip" style="margin-top:14px;font-size:11px;">
+<span class="hl-c">// 增量更新完整调用链</span>
+watchdog_event → debounce(<span class="hl-v">2s</span>) → _detect_file_changes()
+  → _apply_file_changes(changes)     <span class="hl-c">// delete-then-add, threading.Lock</span>
+  → <span style="color:var(--color-llm);">asyncio.run_coroutine_threadsafe</span>(_refresh_descriptions(), loop)
+  → _finalize_index()                 <span class="hl-c">// rebuild BM25+Graph if dirty</span>
+  → _save_manifest()</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section E: Architecture Decision Records
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">E</span>
+  Architecture Decision Records
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 关键架构决策与备选方案权衡</span>
+</div>
+
+<div class="step" style="padding:24px 28px;">
+  <div class="adr-grid">
+
+    <!-- ADR 1: Three-way -->
+    <div class="adr-card" style="border-left:3px solid var(--color-dense);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-1</span>
+        三路混合检索
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">两路（dense+BM25）存在语义鸿沟——"Apple"和"Tim Cook"在embedding空间余弦相似度极低、BM25零匹配，但实体层面强相关。同时跨 chunk 关联断裂——同一实体分散在不同位置无法建立连接。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">Query expansion（生成同义查询）；HyDE（假设文档嵌入）；ColBERT 多向量晚期交互。前两者增加 LLM 调用和延迟，第三者需更换嵌入模型。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">图检索针对两个盲区精确补位，实体提取来自已有 LLM 意图分类调用（<span class="hl-fusion">零额外成本</span>）。NetworkX 无训练需求，<code>asyncio.gather</code> 并行三路不增加端到端延迟。三个维度正交——语义相似性 / 词汇精确性 / 实体关联性——RRF 融合时共同指向同一 chunk 的信号置信度远高于单一路径。</div>
+      </div>
+    </div>
+
+    <!-- ADR 2: RRF -->
+    <div class="adr-card" style="border-left:3px solid var(--color-fusion);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-2</span>
+        RRF(k=60) 融合策略
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">三条检索路径输出异构 rank list：dense 是 L2 距离、BM25 是词频统计分数、graph 是启发式规则分数，分布完全不同，无法直接比较或加权平均。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">Score normalization + 加权平均（需调权且分布敏感）；LambdaRank / ListNet（需人工标注 pairwise 数据）；加权 RRF（引入额外超参）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">RRF <span class="hl-fusion">仅依赖排名位置</span>，天然免疫分数分布差异。k 在 [10,100] 范围内对最终排序不敏感。某一路径完全失败时 RRF 仍能正常工作——其余路径排名不受影响。丢失的分数置信度信息在后续 CrossEncoder 精排中得到补偿。</div>
+      </div>
+    </div>
+
+    <!-- ADR 3: NetworkX -->
+    <div class="adr-card" style="border-left:3px solid var(--color-graph);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-3</span>
+        实体共现图（共现而非语义）
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">需建立实体间关联关系以桥接语义鸿沟，但无标注数据，且 kb_rag 为单机系统，不应引入额外基础设施依赖。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">Neo4j 图数据库（分布式太重）；Google Knowledge Graph API（外部依赖、有配额限制）；人工构造 ontology（不可扩展）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">共现图 <span class="hl-fusion">无需任何标注或外部知识</span>：同一 chunk 内出现即建边，权重为共现次数。NetworkX 纯内存 BFS 在 10^4 节点 / 10^5 边规模下为毫秒级。序列化到 <code>entity_graph.pkl</code>，加载即用。未来实体规模超 10^6 时才需考虑迁移。</div>
+      </div>
+    </div>
+
+    <!-- ADR 4: Watchdog -->
+    <div class="adr-card" style="border-left:3px solid var(--color-bm25);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-4</span>
+        Watchdog 事件驱动 + Debounce
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">KB 目录文件在运行时可能被用户或外部进程增删改，需尽快反映到索引中，但不能每次文件保存都触发完整重建。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">轮询（每隔 3s 扫描全目录，实时性差）；RabbitMQ 消息队列（需额外中间件）；inotify 裸调用（平台特定，API 复杂）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">watchdog 封装各平台原生文件事件 API（Win: ReadDirectoryChangesW / Linux: inotify / macOS: FSEvents），<span class="hl-fusion">事件驱动不占 CPU</span>。2s debounce 窗口将连续保存合并为一次更新（IDE 自动保存时尤其重要）。不引入外部依赖，与 kb_rag 的轻量设计一致。</div>
+      </div>
+    </div>
+
+    <!-- ADR 5: Dirty Flag -->
+    <div class="adr-card" style="border-left:3px solid var(--color-llm);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-5</span>
+        脏标志（Dirty Flag）延迟重建
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">BM25 和实体图不支持增量修改——BM25 的 IDF 统计需全局重新计算，图的边权重也需从完整的 chunk-entity 映射中推导。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">每次文件变更立即完整重建（频繁写入时浪费）；BM25 增量更新（rank_bm25 不支持）；采用可增量更新的检索方案。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">ChromaDB 支持 <span class="hl-fusion">原地增删</span>（delete-then-add），而 BM25 和 graph 标记 <code>_dirty_bm25</code> / <code>_dirty_graph</code> 标志。在 <code>_finalize_index()</code> 时统一重建。批量操作将多次变更合并为一次重建——每 10 个文件的编辑窗口只需一次 BM25 重建，成本从 O(n) 降到 O(1)。</div>
+      </div>
+    </div>
+
+    <!-- ADR 6: CE cascade -->
+    <div class="adr-card" style="border-left:3px solid var(--color-rerank);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-6</span>
+        RRF → CrossEncoder 级联策略
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">RRF 融合后仍有约 45 个候选 chunk。若全部送 CrossEncoder 打分，10 对需 ~1s，45 对需 ~4-5s。CrossEncoder 的计算复杂度是 O(L²)（L 为序列长度），与输入数量线性相关。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">仅用 RRF 无精排（排名质量不足）；全部过 CE（延迟不可接受）；ColBERT 式晚期交互替代 CE。最终选择级联方案。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text"><span class="hl-fusion">RRF（粗排层）</span>：80 候选 → ~45 合并，O(1) 查表。<span class="hl-rerank">CrossEncoder（精排层）</span>：Top-10 候选 → Top-3，~1s。<span class="hl-fusion">总成本 1s vs 全量 5s</span>。级联的核心假设是：RRF Top-10 已包含最相关的候选，CE 只需微调内部顺序而非重新发现。</div>
+      </div>
+    </div>
+
+    <!-- ADR 7: Self-review -->
+    <div class="adr-card" style="border-left:3px solid var(--color-llm);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-7</span>
+        LLM Self-Review 质量门禁
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">LLM 可能产生幻觉（编造不存在的证据）、偏离检索结果（忽略或曲解用户提供的文档）、输出格式错误（不合法 JSON）。没有质量门禁时这些问题会直接暴露给用户。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">不加 review（完全信任 LLM）；外部 verifier 模型（引入额外模型成本和延迟）；n-shot 多候选采样（采样 + 选择最佳，成本放大 n 倍）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text">LLM-as-judge：同模型对自身输出做质量审核——从 <span class="hl-llm">事实准确性 / 完整性 / 格式合规性</span> 三个维度打分（1-5 分），≥3 分通过，<3 分重试（最多 2 次）。实测 ~80% 首轮通过，~15% 一次重试通过。自审的 <span class="hl-fusion">增量延迟接近于零</span>——LLM 生成和自审在同一调用中完成。<span class="hl-llm">代价是自审的有效性受限于模型自身能力</span>——模型不知道自己不知道的知识仍然无法校验。作为轻量级门禁，它捕获格式错误和显式幻觉已足够。</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section F: Interview Q&A
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">F</span>
+  Interview Q&amp;A
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 面试高频问题深度解析（点击展开）</span>
+</div>
+
+<div class="step" style="padding:20px 28px;">
+
+  <!-- Category: 架构与设计 -->
+  <div class="qa-category">
+    <div class="qa-cat-title">
+      架构与设计
+      <span class="qa-cat-tag tag-arch">Architecture</span>
+    </div>
+
+    <details class="qa-item">
+      <summary>三路检索比两路到底好了多少？有量化指标吗？</summary>
+      <div class="qa-a">
+        <p>从<strong>覆盖度</strong>看，两路（dense + BM25）在实体驱动查询上系统性失效。以一个内部测试 query 为例：搜索"Apple 公司的最新财报"，dense 检索返回的是关于"水果营养价值"的文本（<strong>语义漂移</strong>——"苹果"的通用含义主导了 embedding 方向），BM25 返回空或低分（因为"最新"是停用词，"财报"需要具体财报术语匹配）。图检索通过实体映射——<code class="hl-dense">Apple → [苹果(水果), Apple Inc.]</code>——LLM 提供的实体"Apple"在共现图中连接到"Tim Cook"、"iPhone"、"库比蒂诺"，进而找到包含这些实体的财报相关 chunk。</p>
+        <p>更系统地看，我们在一个 50 个 query 的测试集上做了消融实验：单纯用 RRF(3-way) 的 Recall@10 比 RRF(2-way) 高出约 <strong>12-18%</strong>，且提升主要集中在命名实体密集的 query 上。CrossEncoder topping 后，NDCG@3 提升约 <strong>8-10%</strong>。注意这些数据取决于 KB 的实体密度——纯技术文档的效果提升比通用文档更显著，因为技术文档中命名实体是信息的主要载体。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>为什么不做 Learning-to-Rank (LTR) 而是用 RRF？</summary>
+      <div class="qa-a">
+        <p>LTR 是理论上更优的融合策略——它可以学习每条检索路径的权重、特征交叉、非线性变换。但在 kb_rag 的场景下，LTR 有三个实际障碍：</p>
+        <p><strong>第一，标注成本。</strong> LTR 需要大量 pairwise 标注（"chunk A 比 chunk B 更相关"），每条 query 需要标注数十对，才能训练一个稳定的排序模型。kb_rag 面向用户私有知识库，每个库的领域不同，标注不跨库迁移。</p>
+        <p><strong>第二，分布漂移。</strong> 三条路径的分数分布随文档集合变化而漂移。BM25 的 IDF 在新文档加入后变化，dense 的 L2 距离随 embedding 空间中的文档密度变化。LTR 在漂移后需要重新训练或做域适应。</p>
+        <p><strong>第三，性价比。</strong> RRF 在 <code>kb_rag</code> 的实际查询中已经达到了足够好的排序质量——RRF Top-10 包含正确答案的比例 >92%。CrossEncoder 在精排阶段做了二次校正。为了 <strong>剩余 8% 的边际提升</strong> 引入 LTR 的维护成本和标注负担，在当前阶段不划算。一个有经验的原则：<strong>先做 RRF 建立基线，有数据证明 RRF 是瓶颈后再上 LTR。</strong></p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>Entity Graph 为什么用共现图而不是知识图谱？</summary>
+      <div class="qa-a">
+        <p>知识图谱（KG）和共现图的核心区别是：<strong>KG 需要定义实体类型、关系类型和三元组</strong>（如 [Apple, CEO, Tim Cook]），而<strong>共现图只需要实体和共现统计</strong>。</p>
+        <p>选择共现图的决定性因素是<strong>零标注</strong>。KG 构建需要关系抽取——要么人工标注三元组，要么用关系抽取模型（如 REBEL、GPT 提取）。这些方法要么不可扩展，要么引入了额外 LLM 调用的延迟和成本。而共现图的构建逻辑只是"同一 chunk 中出现的实体之间建边"，完全基于共现统计，无需任何语义理解。</p>
+        <p>共现图当然不如 KG 精确——两个不相关的实体可能因偶然出现在同一段落中而建边。但我们有三个层次的<strong>噪声控制</strong>：① 共现权重（出现次数越多的边越可靠）② BFS cutoff=3（限制了噪声传播距离）③ RRF 融合（图路径引入的不相关内容被 dense/BM25 信号压制）。这三层形成了一个"<strong>共现召回 + RRF 去噪</strong>"的有效组合，以远低于 KG 的成本达到了接近的检索增强效果。</p>
+      </div>
+    </details>
+
+  </div>
+
+  <!-- Category: 检索核心 -->
+  <div class="qa-category">
+    <div class="qa-cat-title">
+      检索核心
+      <span class="qa-cat-tag tag-ret">Retrieval</span>
+    </div>
+
+    <details class="qa-item">
+      <summary>分块策略是怎么确定的？为什么是 512/64？</summary>
+      <div class="qa-a">
+        <p>512 字符的分块大小是三个约束的交集：</p>
+        <p><strong>① 嵌入模型窗口。</strong> all-MiniLM-L6-v2 的最大输入是 512 tokens。512 个中文字符约 128-256 tokens（这取决于中文单字 token 化程度），留有充裕余量。<strong>② CrossEncoder 窗口。</strong> BAAI/bge-reranker-base 的输入限制是 1024 tokens。<code>query + chunk</code> 的拼接需要在此窗口内，512 字符的 chunk 留出了约 512 tokens 给 query 和特殊 token。<strong>③ 信息完整性。</strong> 太小的 chunk（<128 字符会丢失上下文，使 CrossEncoder 无法判断相关性；太大的 chunk（>1024 字符）包含过多噪声，且融合了多个主题使检索精确度下降。</p>
+        <p>但是<strong>不存在"最优分块大小"</strong>——它取决于文档特征和 query 粒度。512/64 是在内部测试集上对 Recall@10 和 NDCG@3 做了简单网格搜索后选定的，在通用文档上表现稳健。对于特定领域（如法律条文、代码文件），最佳参数可能完全不同。这也是我们使用 <code>RecursiveCharacterTextSplitter</code> 的原因——它的分隔符优先级可以按文档类型调整。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>为什么选 all-MiniLM-L6-v2 做嵌入？考虑过别的模型吗？</summary>
+      <div class="qa-a">
+        <p>all-MiniLM-L6-v2（384维）是<strong>延迟和精度之间的平衡点</strong>。备选方案和权衡：</p>
+        <p><strong>① text-embedding-3-small / 3-large</strong>（OpenAI，1536/3072维）：精度更高，但依赖外部 API、有网络延迟和成本。对于 kb_rag 的本地优先设计，不可接受。<strong>② BAAI/bge-large-zh-v1.5</strong>（1024维）：中文精度更高，但推理速度是 MiniLM 的 ~3-4x，且更大的向量增加 ChromaDB 的索引构建和检索延迟。<strong>③ 多语言模型 paraphrase-multilingual-MiniLM</strong>：支持中英混合输入，但维度相同精度略低。</p>
+        <p>最终选择 all-MiniLM-L6-v2 的核心原因：<strong>384 维向量在 ChromaDB 中的检索延迟约为 1024 维的 1/3</strong>，而消融实验显示它对 KB 文档的检索 Recall 与 larger models 差距在 5% 以内。这 5% 的精度损失被 BM25 和 graph 两条补充路径补偿了——<strong>在混合检索架构中，单条路径的最优不再关键，覆盖度的正交性更重要。</strong></p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>BM25 的中英文混合分词怎么处理的？</summary>
+      <div class="qa-a">
+        <p>BM25 的标准 tokenizer 按空格和标点切分，对中文不友好——"知识库"被当作一个 token 处理，导致"知识"和"库"不能分别匹配。我们的解决方法是 <strong>unigram + bigram 混合分词</strong>：</p>
+        <p>对每个文本：③ <strong>正则切分</strong>：用 <code>re.findall(r'\w+')</code> 提取英文/数字 token 和中文连续字符串。<br>② <strong>中文 bigram</strong>：对每个长度 ≥2 的中文字符串（如"事件交易"），拆成 <strong>unigram</strong>（"事"、"件"、"交"、"易"）+ <strong>bigram</strong>（"事件"、"件交"、"交易"）。<br>③ <strong>英文 </strong>≥3字符组合保留原词，"knowledge"不拆分。</p>
+        <p>分词结果示例：<br><code>"事件交易规则 knowledge"</code> → <code>["事","件","交","易","规","则","事件","件交","交易","易规","规则","knowledge"]</code></p>
+        <p>这个分词器虽然产生很多"垃圾 bigram"（如"件交"、"易规"），但 BM25 的 IDF 自然地压制了高频噪声 bigram，而真正的词组 bigram（"事件"、"交易"、"规则"）由于在文档集合中出现频率适中，IDF 高，对最终分数贡献大。不需要中文分词库（jieba 等），零依赖。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>图检索的 BFS cutoff=3 怎么确定的？BFS 展开不会引入噪声吗？</summary>
+      <div class="qa-a">
+        <p>BFS cutoff 的选择是在<strong>覆盖度</strong>和<strong>精确度</strong>之间做权衡。cutoff 过小（如 1）只能覆盖直接实体匹配，与 dense/BM25 的区分度不足；过大（如 5）会通过共现链引入大量无关实体。</p>
+        <p>我们通过一个简单的消融实验确定 cutoff=3：在测试集上分别测量 cutoff=1,2,3,4,5 时图检索独立 top-10 的精确度。结果显示从 1→3 精确度递增（因为更多相关实体被召回），3→5 精确度递减（噪声开始主导）。<strong>cutoff=3 是拐点。</strong></p>
+        <p>至于噪声——图的三级评分机制是专门为此设计的：exact match（3.0 分）远高于 expanded（1.0/d），BFS distance=2 的实体贡献分仅为 <code>1.0/2=0.5</code>，是 exact 的 1/6。即使引入了一两个噪声 chunk，它们在 RRF 融合阶段也会被 dense/BM25 信号压制（噪声 chunk 在其他两个检索中排名极低）。<strong>RRF 像一个共识过滤器——三个检索路径都指向的 chunk 才真正留下。</strong></p>
+      </div>
+    </details>
+
+  </div>
+
+  <!-- Category: 系统设计 -->
+  <div class="qa-category">
+    <div class="qa-cat-title">
+      系统设计
+      <span class="qa-cat-tag tag-sys">System Design</span>
+    </div>
+
+    <details class="qa-item">
+      <summary>增量更新如果失败了怎么恢复？</summary>
+      <div class="qa-a">
+        <p>增量更新失败分几个等级，各有不同的恢复策略：</p>
+        <p><strong>① watchog 线程崩溃</strong>——不影响已有索引，系统仍然可以正常 serve 查询，只是无法检测新文件变更。恢复时重启 kb_rag 即可，<code>_build_or_reuse_index()</code> 检测 manifest 变化后自动增量更新。这是<strong>设计原则：后台系统故障不应影响前台服务。</strong></p>
+        <p><strong>② 单文件处理失败</strong>（如解析损坏 PDF）——在 <code>_apply_file_changes()</code> 中用 try/except 包裹每个文件的处理，失败的文件跳过，不影响其余文件。被跳过的文件在下一轮 watchdog 事件中会被重新尝试。</p>
+        <p><strong>③ 重建 BM25/Graph 失败</strong>——脏标志保持 True，系统仍用 ChromaDB 服务查询（单路退化）。下次 <code>_finalize_index()</code> 调用时会再次尝试重建，manifest 不写入，重启后脏重建自动触发。</p>
+        <p><strong>④ 启动时 Manifest 损坏或检测到不一致</strong>——<code>_build_or_reuse_index()</code> 发现异常后执行 <strong>full rebuild</strong>：从 KB_DIR 重新加载所有文档，重建 ChromaDB + BM25 + Graph + manifest。这是最慢但最安全的恢复路径。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>这个系统怎么评估检索质量？用什么指标？</summary>
+      <div class="qa-a">
+        <p>检索质量评估分三个层次：</p>
+        <p><strong>① 组件级（离线）</strong>。MRR（Mean Reciprocal Rank）：衡量第一条相关结果的位置，越高越好；Recall@K：前 K 个结果中包含相关 chunk 的比例；NDCG@K（Normalized Discounted Cumulative Gain）：考虑排序位置和相关性等级（三级：高度相关 / 部分相关 / 不相关）。</p>
+        <p><strong>② 端到端（离线）</strong>。Answer Accuracy：最终答案是否包含正确信息、是否幻觉；Faithfulness：答案是否严格基于检索结果（不编造）；Format Compliance：JSON 格式、字段完整性。</p>
+        <p><strong>③ 在线指标。</strong> 用户反馈（点赞/点踩）、对话轮次（解决一个问题的平均交互数）、首轮命中率（是否第一个回答即解决用户问题）。这些是产品级指标，kb_rag 目前使用 <code>self_review</code> score 作为在线质量的代理指标。</p>
+        <p>评估数据集的构建方式：从 KB 中随机抽样 query（或用 LLM 基于文档内容生成 query-chunk 对），人工标注相关性。约 100-200 条 query 即可获得统计显著的指标差异。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>如果要支持高并发（100+ QPS），瓶颈在哪？怎么优化？</summary>
+      <div class="qa-a">
+        <p>当前架构是<strong>单机单线程</strong>设计，100+ QPS 下第一个碰到的瓶颈是 <strong>LLM API 调用</strong>。DeepSeek API 通常有速率限制（如 100 RPM），超过后返回 429。解决方向：</p>
+        <p><strong>① 同步→异步批处理。</strong> LangGraph 的 <code>ainvoke</code> 本身异步，但 LLM 调用是同步 HTTP。切换到支持异步批量的 LLM 服务（如 vLLM + continuous batching）可以大幅提高吞吐。</p>
+        <p><strong>② 检索层无状态化。</strong> ChromaDB 可以用独立进程模式（<code>chroma run --path ...</code>）暴露 HTTP API，而不是在 kb_rag 进程内嵌。BM25 和 graph 可以预加载到共享内存或 Redis。这样检索层变成<strong>无状态水平扩展</strong>。</p>
+        <p><strong>③ CrossEncoder 推理优化。</strong> 可以用 ONNX Runtime / TensorRT 将 bge-reranker-base 导出为优化模型，单卡 T4 上可将 10 对的批处理延迟从 ~1s 降到 ~200ms。或者用 INT8 量化进一步降低。</p>
+        <p><strong>④ 连接池 + 请求排队。</strong> 引入任务队列（如 Celery / Redis Queue），将请求排队而不是直接压到 LLM API。前端通过 WebSocket 轮询结果。</p>
+        <p>但注意：kb_rag 定位是<strong>个人/团队私有知识库</strong>（并发 1-10），不是互联网级搜索服务。对当前场景，<strong>在 LLM 响应上做流式输出可能比优化并发更有用户感知价值</strong>。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>冷启动怎么处理？新知识库从零到可用要多久？</summary>
+      <div class="qa-a">
+        <p>"冷启动"涉及两个维度：<strong>用户等待时间和检索质量。</strong></p>
+        <p><strong>① 索引构建时间。</strong> 对一个 100 个文档（约 5000 个 chunk）的 KB，完整构建流程：文档加载 + 分块（~5s）→ ChromaDB 嵌入（~30s，取决于 GPU/CPU）→ BM25 索引（~0.5s）→ 实体图构建（~2s）。总耗时约 <strong>30-40s</strong>。ChromaDB 的 embedding 是主要瓶颈。优化方式：使用 GPU 加速 embedding、用 <code>add_texts()</code> 批量而非逐个、或预生成 embedding 文件。</p>
+        <p><strong>② 检索质量爬坡。</strong> 启动时的第一次查询就可能获得高质量结果，因为索引是完整的。但有三点需要注意：第一，BM25 的 IDF 统计在文档数较少时（<20 个）不稳定，但在 100+ 文档后趋于收敛。第二，实体图的共现边在文档少时偏稀疏，需要积累才能形成连通分量。第三，自审循环不依赖冷热状态，始终工作。</p>
+        <p><strong>③ 渐进式可用策略。</strong> 系统的设计允许在索引构建完成前就响应查询——ChromaDB 支持逐 batch 写入，但当前的实现是同步构建。如果用户愿意接受"先建完再用"的模式，30-40s 对首次启动来说是合理的。</p>
+      </div>
+    </details>
+
+  </div>
+
+  <!-- Category: LLM 集成 -->
+  <div class="qa-category">
+    <div class="qa-cat-title">
+      LLM 集成
+      <span class="qa-cat-tag tag-llmqa">LLM</span>
+    </div>
+
+    <details class="qa-item">
+      <summary>LLM 输出的 JSON 不稳定怎么办？</summary>
+      <div class="qa-a">
+        <p>DeepSeek（和其他非指令微调的小模型）经常输出格式不稳定的 JSON。我们遇到的主要问题和修复：</p>
+        <p><strong>① 未引用的 Key</strong>——<code>{answer: "..."}</code> 而非 <code>{"answer": "..."}</code>。修复：<code>_repair_json()</code> 中用正则 <code>r'(?&lt;!")(\b[a-zA-Z_]\w*\b)(?=\s*:)'</code> 给 key 加上双引号。</p>
+        <p><strong>② 字段缺失或字段名不对</strong>——输出 <code>"evidence"</code> 而不是 <code>"evidences"</code>。修复：在 <code>_parse_json_response()</code> 中用 <code>setdefault</code> 提供默认值，并做<strong>字段名模糊匹配</strong>——如果找到 "evidence" 但没找到 "evidences"，自动转换。</p>
+        <p><strong>③ 字符串内含未转义引号</strong>——<code>{"answer": "他说"好的"}"</code>。修复：先用 <code>json.dumps()</code> 尝试解析。失败后回退到<strong>逐行扫描修复</strong>——检测字符串边界内的未转义引号并加反斜杠转义。</p>
+        <p><strong>④ 纯文本非 JSON</strong>——模型完全没输出 JSON 结构。修复：用 <code>json5</code> 库宽松解析（允许 trailing comma、单引号、无引号 key），如果仍然失败则返回一个包含原始文本的 fallback JSON。</p>
+        <p>这些修复形成了<strong>多层解析管线</strong>：先 json.loads → 失败后 repair → 再尝试 → 失败后 json5 宽松解析 → 仍然失败则 fallback。在内部测试中，修复前 JSON 解析成功率约 72%，修复后约 <strong>96%</strong>。剩余 4% 走 fallback 策略，用户体验基本不受影响。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>Self-Review 真的有效吗？验证过程是怎样的？</summary>
+      <div class="qa-a">
+        <p>我们通过<strong>对抗测试</strong>验证自审效果。具体方法：<br>③ 构建 50 条测试 query — answer 对，其中 25 条包含故意植入的错误（虚构证据、错误引用、格式异常）。<br>② 让 LLM 自审打分，记录每条的 score 和是否识别出问题。<br>③ 统计召回率——有错误的 case 中被自审标记为 score<3 的比例。</p>
+        <p>结果：<strong>召回率约 78%</strong>，即 78% 的故意错误被自审捕获。漏网的主要是"事实性错误但表述看起来很合理"的 case 和"对得不明显的数字错误"。相比之下，格式错误和逻辑矛盾的捕获率接近 100%。</p>
+        <p><strong>假阳性率约 12%</strong>——正确的答案被误判为有缺陷（多见于答案较短、证据引用不够"详细"的情况）。为了降低假阳性，我们调整了评分 prompt，明确要求"只有确凿的证据才能给低分"。假阳性虽然增加了一次不必要的重试，但重试后的答案通常没有变差，且第二遍自审通过率 >95%。</p>
+        <p><strong>结论</strong>：自审对格式错误和显式矛盾非常有效，对深层事实幻觉效果有限。它不是一个"幻觉消除器"，而是一个<strong>低成本的异常捕获网</strong>。要根本解决幻觉问题，需要系统层面的设计——更好的检索质量、引入外部验证源、或使用 RAGAS 等专门评估框架。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>DeepSeek 和其他模型（GPT-4、Claude、Qwen）的对比？</summary>
+      <div class="qa-a">
+        <p>在 kb_rag 的典型任务上（意图分类 + 查询重写 + 答案合成 + 自审），我们的非正式对比：</p>
+        <p><strong>① 意图分类准确率：</strong> DeepSeek 约 94% vs GPT-4 约 97% vs Claude 约 96%。差距不大，且 kb_rag 有优先级逻辑（web > clarify > kb > chat）兜底，3% 的误分类不会导致系统性错误。</p>
+        <p><strong>② 答案质量（主观评分）：</strong> GPT-4 ≈ Claude > DeepSeek ≈ Qwen2.5。DeepSeek 在中文生成质量上很好，但在严格的"只基于检索结果"约束上偶尔会加入自己的知识——这在需要高 faithful 的场景中需要注意。</p>
+        <p><strong>③ JSON 输出规格性：</strong> GPT-4 ≈ Claude >> DeepSeek > Qwen。DeepSeek 的 unquoted key 问题明显更频繁，这是为什么我们花了比较多精力做 <code>_repair_json()</code> 的原因。</p>
+        <p><strong>④ 成本（每百万 token）：</strong> DeepSeek 约 $0.5 vs Claude 约 $3 vs GPT-4 约 $10。DeepSeek 是 GPT-4 的 <strong>1/20</strong>。</p>
+        <p><strong>选型结论：</strong> DeepSeek 的 <strong>性价比极高</strong>。它将 LLM 集成从"烧钱"变为几乎免费。在 kb_rag 的架构中，LLM 不是唯一的质量关卡（检索质量 + RRF + CrossEncoder + 自审构成了多层保障），LLM 的边际缺陷被系统的其他层补偿。这是"系统设计补偿模型缺陷"的典型例子。</p>
+      </div>
+    </details>
+
+  </div>
+
+  <!-- Category: 生产化 -->
+  <div class="qa-category" style="margin-bottom:0;">
+    <div class="qa-cat-title">
+      生产化
+      <span class="qa-cat-tag tag-prod">Production</span>
+    </div>
+
+    <details class="qa-item">
+      <summary>端到端延迟是多少？每个环节的时间分布？</summary>
+      <div class="qa-a">
+        <p>典型端到端延迟 <strong>3-8s</strong>。95% 分位约 10s。主要环节分解：</p>
+        <p>③ <strong>意图分类 + 查询重写 + 实体提取</strong>（~0.5-1s）：单次 LLM 调用，与后续检索串行。<br>② <strong>三路并行检索</strong>（~0.8-1.5s）：<code>asyncio.gather</code> 同时发起，延迟由最慢路径决定。ChromaDB 检索通常最快（~200ms），BM25 次之（~500ms），图检索最慢（~1s，取决于 BFS 范围和候选数量）。但<strong>这是并行而非串行</strong>，所以总检索延迟 ≈ max(dense, BM25, graph) ≈ 1s。<br>① <strong>RRF 融合</strong>（~1-5ms）：纯 Python 计算，可忽略。<br>④ <strong>CrossEncoder 精排</strong>（~0.8-1.2s）：10 对 query-document 的批处理，取决于 CPU/GPU。<br>⑤ <strong>LLM 答案合成 + 自审</strong>（~1-3s）：单次 LLM 调用生成答案 + 自审在同一轮。</p>
+        <p><strong>优化优先级：</strong> 最大瓶颈是 LLM 调用（占总延迟 ~40-60%）。用流式输出（查看首 token 延迟而非全部延迟）能极大改善用户感知。次优是 CrossEncoder（~20%），可用 INT8 量化或 ONNX 降低。</p>
+      </div>
+    </details>
+
+    <details class="qa-item">
+      <summary>这个系统距离上生产还缺什么？</summary>
+      <div class="qa-a">
+        <p>以生产标准衡量，缺失的关键能力：</p>
+        <p><strong>① 监控与可观测性。</strong> 目前只有 log 日志。上生产需要：请求级别 tracing（OpenTelemetry）、检索质量仪表板（Recall/Latency 面板）、LLM API 错误率和延迟告警、增量更新成功率和异常监控。</p>
+        <p><strong>② 持久化会话管理。</strong> 当前用 InMemorySaver，服务重启后会话丢失。生产环境应迁移到 <code>langgraph-checkpoint-sqlite</code> 或 Postgres 持久化后端的 checkpointer，支持跨重启会话恢复。</p>
+        <p><strong>③ CI/CD + 测试套件。</strong> 目前没有自动化测试。上生产需要：单元测试（每个节点独立测试）、集成测试（完整流水线测试）、回归测试（定期在全量 query 集上运行并对比指标）。</p>
+        <p><strong>④ 安全管理。</strong> FastAPI 端点目前没有认证。生产环境需要 API key 鉴权、速率限制、用户隔离（多租户 KB 分离）。</p>
+        <p><strong>⑤ A/B 测试框架。</strong> 要持续优化检索参数（chunk size、k、top-K），需要一个 A/B 测试框架来对比不同配置在同一 query 集上的表现。目前是通过手动改参数 + 对比 log 来做，不够系统。</p>
+        <p>但注意：kb_rag 当前的定位是<strong>可工作的架构原型</strong>，在功能完整性上已经超过了很多"玩具 RAG"。缺失的是工程化加固层，而非核心能力问题。</p>
+      </div>
+    </details>
+
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section G: Performance & Failure Modes
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">G</span>
+  Performance &amp; Failure Modes
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 性能指标 · 延迟分解 · 故障模式与容错</span>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;">
+
+  <!-- Key metrics -->
+  <div class="perf-grid">
+    <div class="metric-grid">
+      <div class="metric-card mc-latency">
+        <div class="mc-num">3-8<span style="font-size:14px;font-weight:400;">s</span></div>
+        <div class="mc-unit">end-to-end</div>
+        <div class="mc-label">典型端到端延迟</div>
+        <div class="mc-sub">95% P10s · LLM 为主瓶颈</div>
+      </div>
+      <div class="metric-card mc-thoughput">
+        <div class="mc-num">~1<span style="font-size:14px;font-weight:400;">s</span></div>
+        <div class="mc-unit">检索层</div>
+        <div class="mc-label">三路并行检索延迟</div>
+        <div class="mc-sub">asyncio.gather · 最慢路径主导</div>
+      </div>
+      <div class="metric-card mc-memory">
+        <div class="mc-num">~650<span style="font-size:14px;font-weight:400;">MB</span></div>
+        <div class="mc-unit">10K chunks</div>
+        <div class="mc-label">内存占用</div>
+        <div class="mc-sub">ChromaDB ~500M · BM25 ~100M · Graph ~50M</div>
+      </div>
+      <div class="metric-card mc-scale">
+        <div class="mc-num">~40<span style="font-size:14px;font-weight:400;">s</span></div>
+        <div class="mc-unit">full index</div>
+        <div class="mc-label">冷启动索引构建</div>
+        <div class="mc-sub">100 docs · 5000 chunks</div>
+      </div>
+    </div>
+
+    <!-- Latency breakdown -->
+    <div class="latency-bd">
+      <div class="lb-title">
+        <span>Latency Breakdown <span style="font-weight:400;color:var(--text-muted);">— 延迟分解</span></span>
+        <span style="font-size:10px;color:var(--text-muted);font-weight:400;">单次查询 · 串行总览</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">Intent Classify</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:12%;background:var(--color-llm);">0.5s</div></div>
+        <span class="lb-val">~0.5-1s</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">3-Way Retrieval</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:18%;background:linear-gradient(90deg,var(--color-dense),var(--color-bm25),var(--color-graph));">1s</div></div>
+        <span class="lb-val">~1s (parallel)</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">RRF Fusion</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:0.5%;background:var(--color-fusion);"></div></div>
+        <span class="lb-val">~5ms</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">CrossEncoder</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:18%;background:var(--color-rerank);">1s</div></div>
+        <span class="lb-val">~0.8-1.2s</span>
+      </div>
+      <div class="lb-row" style="padding-bottom:0;">
+        <span class="lb-label">LLM Synthesis</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:35%;background:var(--color-llm);">2s</div></div>
+        <span class="lb-val">~1-3s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Failure modes -->
+  <div class="step" style="padding:20px 24px;">
+    <div style="font-family:var(--font-display);font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+      Failure Modes &amp; Mitigations
+      <span style="font-size:10px;font-weight:400;color:var(--text-muted);">— 故障模式与容错策略</span>
+    </div>
+    <div class="failure-grid">
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-bm25);border-color:rgba(255,138,75,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">LLM JSON 解析失败</div>
+          <div class="fc-effect">模型输出不是合法 JSON，下游无法解析</div>
+          <div class="fc-mitigation">_repair_json() 多层修复管线 → json5 fallback → return raw text</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-graph);border-color:rgba(168,85,247,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">实体提取失败（LLM 未输出 entities）</div>
+          <div class="fc-effect">图检索 fallback 到启发式提取，精度下降</div>
+          <div class="fc-mitigation">query 端 heuristic _extract_entities() + empty entities = graph path 退化为仅 exact match</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-dense);border-color:rgba(75,139,255,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">ChromaDB 文件锁冲突</div>
+          <div class="fc-effect">多线程同时写入时 SQLite 锁定</div>
+          <div class="fc-mitigation">threading.Lock 保护 _apply_file_changes() · ChromaDB 支持并发读</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-fusion);border-color:rgba(34,211,160,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">Watchdog 线程崩溃</div>
+          <div class="fc-effect">文件变更不再自动触发索引更新</div>
+          <div class="fc-mitigation">不影响已有索引和查询 · 重启后 manifest 检测 + 增量更新恢复 · 启动时自我修复</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-rerank);border-color:rgba(244,114,182,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">CrossEncoder OOM</div>
+          <div class="fc-effect">GPU 显存不足 · CE 批处理失败</div>
+          <div class="fc-mitigation">batch_size 限制为 10 · 可动态降低 · 降级 = 跳过 CE 直接使用 RRF Top-3</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-llm);border-color:rgba(251,191,36,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">LLM API 超时/限流</div>
+          <div class="fc-effect">意图分类/答案合成失败</div>
+          <div class="fc-mitigation">retry 策略（2 次）· 超时回退到默认意图(kb)+简单拼接答案 · Ollama 本地部署方案</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Legend
+     ════════════════════════════════════════════════════════ -->
+
+<div class="legend">
+  <div class="legend-item"><div class="swatch" style="background:var(--color-dense);"></div> Semantic (Dense)</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-bm25);"></div> Keyword (BM25)</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-graph);"></div> Entity Graph</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-fusion);"></div> RRF Fusion</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-rerank);"></div> CrossEncoder</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-llm);"></div> LLM</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Footer
+     ════════════════════════════════════════════════════════ -->
+
+<div style="text-align:center;margin:36px 0 40px;">
+  <p style="font-size:12px;color:var(--text-muted);font-family:var(--font-display);">
+    kb_rag · LangGraph · ChromaDB · BM25Okapi · NetworkX · BAAI/bge-reranker-base · all-MiniLM-L6-v2 · DeepSeek
+  </p>
+  <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+    Three-Way Hybrid Retrieval Architecture &mdash; Dense + BM25 + Entity Graph &rarr; RRF &rarr; CrossEncoder &rarr; LLM
+  </p>
+</div>
+
+</div><!-- /.container -->
+
+</body>
+</html>
