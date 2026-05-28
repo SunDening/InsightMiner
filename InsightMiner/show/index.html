@@ -1,0 +1,2742 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>InsightMiner — 智能知识库问答系统架构</title>
+<style>
+/* ════════════════════════════════════════════════════════
+   设计系统
+   ════════════════════════════════════════════════════════
+   字体：Inter (标题/英文) + Noto Sans SC (中文正文)
+   背景：#0A0D16 → #101526
+   面板：#151B2E → #1A2142
+   路径色：API=#4B8BFF  RAG=#22D3A0  BM25=#FF8A4B  图=#A855F7
+           融合=#22D3A0  精排=#F472B6  LLM=#FBBF24  记忆=#EC4899
+   间距：8px base  圆角：12px/8px/6px
+   ──────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg-primary:   #0A0D16;
+  --bg-secondary: #151B2E;
+  --bg-card:      #1A2142;
+  --bg-hover:     #1E2650;
+  --border:       #283060;
+  --border-light: rgba(255,255,255,0.06);
+
+  --text-primary:   #E8EDFF;
+  --text-secondary: #8892B8;
+  --text-muted:     #4A5280;
+
+  --color-api:    #4B8BFF;
+  --color-api-bg: rgba(75,139,255,0.10);
+  --color-bm25:   #FF8A4B;
+  --color-bm25-bg:rgba(255,138,75,0.10);
+  --color-graph:  #A855F7;
+  --color-graph-bg:rgba(168,85,247,0.10);
+  --color-fusion: #22D3A0;
+  --color-rerank: #F472B6;
+  --color-llm:    #FBBF24;
+  --color-memory: #EC4899;
+  --color-memory-bg: rgba(236,72,153,0.10);
+
+  --radius-card: 12px;
+  --radius-tag:  6px;
+
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-body:    'Noto Sans SC', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Consolas', monospace;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 0;
+  background-image:
+    radial-gradient(ellipse at 15% 5%, rgba(75,139,255,0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at 85% 95%, rgba(168,85,247,0.05) 0%, transparent 50%);
+}
+
+.container {
+  width: 100%;
+  max-width: 1400px;
+  padding: 0 28px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Header
+   ════════════════════════════════════════════════════════ */
+
+header {
+  text-align: center;
+  padding: 52px 20px 36px;
+  position: relative;
+}
+
+header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  max-width: 500px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border), transparent);
+}
+
+header .repo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 6px 16px;
+  margin-bottom: 20px;
+  letter-spacing: 0.3px;
+}
+
+header .repo-badge .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-fusion);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+header h1 {
+  font-family: var(--font-display);
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.2;
+  background: linear-gradient(135deg, #E8EDFF 20%, var(--color-api) 45%, var(--color-graph) 75%, var(--color-fusion) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+header .sub {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+header .tech-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+header .tech-badges span {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Section Titles
+   ════════════════════════════════════════════════════════ */
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  margin: 48px 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-title .sec-num {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 2px 10px;
+  border-radius: var(--radius-tag);
+}
+
+/* ════════════════════════════════════════════════════════
+   Tags
+   ════════════════════════════════════════════════════════ */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--radius-tag);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.tag-sm {
+  font-size: 9px;
+  padding: 2px 7px;
+}
+
+.tag-api    { background: var(--color-api-bg);  color: var(--color-api);  border: 1px solid rgba(75,139,255,0.2); }
+.tag-bm25   { background: var(--color-bm25-bg); color: var(--color-bm25); border: 1px solid rgba(255,138,75,0.2); }
+.tag-graph  { background: var(--color-graph-bg);color: var(--color-graph);border: 1px solid rgba(168,85,247,0.2); }
+.tag-fusion { background: rgba(34,211,160,0.08);color: var(--color-fusion);border: 1px solid rgba(34,211,160,0.2); }
+.tag-rerank { background: rgba(244,114,182,0.08);color: var(--color-rerank);border: 1px solid rgba(244,114,182,0.2); }
+.tag-llm    { background: rgba(251,191,36,0.08); color: var(--color-llm); border: 1px solid rgba(251,191,36,0.2); }
+.tag-memory { background: var(--color-memory-bg);color: var(--color-memory);border: 1px solid rgba(236,72,153,0.2); }
+
+/* ════════════════════════════════════════════════════════
+   Architecture Overview
+   ════════════════════════════════════════════════════════ */
+
+.overview {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  margin-bottom: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.overview::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-api), var(--color-fusion), var(--color-bm25), var(--color-graph), var(--color-rerank), var(--color-llm));
+}
+
+.ov-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ov-row + .ov-row {
+  margin-top: 12px;
+}
+
+.ov-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  min-width: 60px;
+  text-align: center;
+}
+
+.ov-node .ov-name {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.ov-node .ov-desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.ov-node.highlight-api    { border-color: rgba(75,139,255,0.25); background: rgba(75,139,255,0.06); }
+.ov-node.highlight-bm25   { border-color: rgba(255,138,75,0.25); background: rgba(255,138,75,0.06); }
+.ov-node.highlight-graph  { border-color: rgba(168,85,247,0.25); background: rgba(168,85,247,0.06); }
+.ov-node.highlight-fusion { border-color: rgba(34,211,160,0.25); background: rgba(34,211,160,0.06); }
+.ov-node.highlight-rerank { border-color: rgba(244,114,182,0.25); background: rgba(244,114,182,0.06); }
+.ov-node.highlight-llm    { border-color: rgba(251,191,36,0.25);  background: rgba(251,191,36,0.06); }
+.ov-node.highlight-memory { border-color: rgba(236,72,153,0.25); background: rgba(236,72,153,0.06); }
+
+.ov-arrow {
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ov-path-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 6px 0 3px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Pipeline Flow
+   ════════════════════════════════════════════════════════ */
+
+.flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.step {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  width: 100%;
+  transition: box-shadow 0.3s;
+  position: relative;
+}
+
+.step:hover {
+  box-shadow: 0 0 40px rgba(75,139,255,0.03);
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.step-number {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.step-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.step-title small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+
+.arrow-connector {
+  width: 2px;
+  height: 28px;
+  background: linear-gradient(180deg, var(--border), var(--border));
+  position: relative;
+  flex-shrink: 0;
+}
+
+.arrow-connector::after {
+  content: '';
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--border);
+}
+
+/* ════════════════════════════════════════════════════════
+   Step 1 — API Layer
+   ════════════════════════════════════════════════════════ */
+
+.api-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.api-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: all 0.25s;
+}
+
+.api-card:hover {
+  transform: translateY(-2px);
+}
+
+.api-card .ac-head {
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-light);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.api-card .ac-head .ac-method {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.api-card .ac-body {
+  padding: 10px 14px 14px;
+}
+
+.api-card .ac-body .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.api-card .ac-body .p-row:last-child { border-bottom: none; }
+.api-card .ac-body .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.api-card .ac-body .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 60%; }
+
+.method-get  { background: rgba(75,139,255,0.12); color: var(--color-api); }
+.method-post { background: rgba(34,211,160,0.12); color: var(--color-fusion); }
+.method-delete { background: rgba(244,114,182,0.12); color: var(--color-rerank); }
+
+/* ════════════════════════════════════════════════════════
+   Step 2 — Intent Classification
+   ════════════════════════════════════════════════════════ */
+
+.intent-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.intent-card {
+  flex: 1;
+  min-width: 170px;
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  transition: all 0.25s;
+}
+
+.intent-card:hover {
+  border-color: var(--color-llm);
+  box-shadow: 0 0 20px rgba(251,191,36,0.06);
+}
+
+.intent-card .label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.intent-card .label.query  { color: var(--color-api); }
+.intent-card .label.intent { color: var(--color-bm25); }
+.intent-card .label.entity { color: var(--color-graph); }
+
+.intent-card .value {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.code-snip {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-secondary);
+}
+
+.code-snip .hl-k { color: var(--color-api); }
+.code-snip .hl-v { color: var(--color-fusion); }
+.code-snip .hl-s { color: var(--color-bm25); }
+.code-snip .hl-c { color: var(--text-muted); }
+
+/* ════════════════════════════════════════════════════════
+   Step 3 — Three Retrieval Paths
+   ════════════════════════════════════════════════════════ */
+
+.retrieval-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.retrieval-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: all 0.25s;
+}
+
+.retrieval-card:hover {
+  transform: translateY(-2px);
+}
+
+.retrieval-card .card-head {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-light);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.retrieval-card.card-dense .card-head { border-bottom-color: rgba(75,139,255,0.15); }
+.retrieval-card.card-bm25  .card-head { border-bottom-color: rgba(255,138,75,0.15); }
+.retrieval-card.card-graph .card-head { border-bottom-color: rgba(168,85,247,0.15); }
+
+.retrieval-card .card-body {
+  padding: 10px 16px 14px;
+}
+
+.retrieval-card .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.retrieval-card .p-row:last-child { border-bottom: none; }
+.retrieval-card .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.retrieval-card .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 55%; }
+
+.retrieval-card .path-strength {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+}
+
+.retrieval-card .path-strength .ps-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.retrieval-card .path-strength .ps-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+/* ════════════════════════════════════════════════════════
+   Comparison Table
+   ════════════════════════════════════════════════════════ */
+
+.compact-table-wrap {
+  overflow-x: auto;
+  margin-top: 10px;
+}
+
+.compact-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.compact-table th {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.compact-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+
+.compact-table tr:hover td {
+  background: rgba(255,255,255,0.01);
+}
+
+.compact-table .td-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* ════════════════════════════════════════════════════════
+   Step 4 — RRF + CrossEncoder
+   ════════════════════════════════════════════════════════ */
+
+.fusion-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.proc-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  transition: all 0.25s;
+}
+
+.proc-card:hover {
+  transform: translateY(-2px);
+}
+
+.proc-card.pc-fusion { border-color: rgba(34,211,160,0.12); }
+.proc-card.pc-rerank { border-color: rgba(244,114,182,0.12); }
+
+.proc-card .pc-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proc-card .pc-formula {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-radius: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  line-height: 1.8;
+}
+
+.proc-card .hl-f { color: var(--color-fusion); font-weight: 600; }
+.proc-card .hl-r { color: var(--color-rerank); font-weight: 600; }
+
+.proc-card .pc-stats {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.pc-stat {
+  flex: 1;
+  min-width: 70px;
+  text-align: center;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+}
+
+.pc-stat .num {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  display: block;
+}
+
+.pc-stat .lbl {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.rrf-worked {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.rrf-worked .rw-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+/* ════════════════════════════════════════════════════════
+   Step 5 — Synthesis & Self-Review
+   ════════════════════════════════════════════════════════ */
+
+.syn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.syn-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  transition: all 0.25s;
+}
+
+.syn-card:hover {
+  transform: translateY(-2px);
+}
+
+.syn-card .syn-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.syn-card .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.syn-card .p-row:last-child { border-bottom: none; }
+.syn-card .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.syn-card .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 55%; }
+
+/* ════════════════════════════════════════════════════════
+   Side Paths
+   ════════════════════════════════════════════════════════ */
+
+.side-paths {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.side-path {
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  transition: all 0.25s;
+}
+
+.side-path:hover {
+  border-color: rgba(148,163,184,0.3);
+  background: var(--bg-hover);
+}
+
+.side-path .sp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.side-path .sp-icon {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  background: rgba(148,163,184,0.08);
+  color: #94A3B8;
+}
+
+.side-path .sp-name {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.side-path .sp-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.side-path .sp-flow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  border: 1px solid var(--border-light);
+}
+
+/* ════════════════════════════════════════════════════════
+   System Architecture
+   ════════════════════════════════════════════════════════ */
+
+.tech-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tech-table th {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.tech-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+
+.tech-table tr:hover td {
+  background: rgba(255,255,255,0.01);
+}
+
+.tech-table .tt-layer {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* ════════════════════════════════════════════════════════
+   Detail Grid
+   ════════════════════════════════════════════════════════ */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+}
+
+.detail-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: all 0.25s;
+}
+
+.detail-card:hover {
+  transform: translateY(-2px);
+}
+
+.detail-card .dc-head {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.detail-card .dc-body {
+  padding: 10px 14px 14px;
+}
+
+.detail-card .p-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.detail-card .p-row:last-child { border-bottom: none; }
+.detail-card .p-lbl { color: var(--text-muted); font-family: var(--font-display); font-weight: 500; }
+.detail-card .p-val { color: var(--text-secondary); font-family: var(--font-display); font-weight: 500; text-align: right; max-width: 55%; }
+
+/* Graph scoring tiers */
+
+.g-tiers {
+  display: flex;
+  flex-direction: column;
+}
+
+.g-tier {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 4px 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.g-tier:first-child { padding-top: 0; }
+.g-tier:last-child { border-bottom: none; padding-bottom: 0; }
+
+.g-tier .gt-score {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  grid-row: 1 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.g-tier .gt-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.g-tier .gt-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Incremental Update */
+
+.inc-pipe {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 10px 4px;
+}
+
+.inc-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.inc-step .is-icon {
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.inc-step .is-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 5px;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.inc-step .is-desc {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+.inc-arrow {
+  font-size: 16px;
+  color: var(--text-muted);
+  padding-top: 10px;
+  flex-shrink: 0;
+}
+
+/* Dirty Flags */
+
+.dirty-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.dirty-item {
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 3px;
+}
+
+.dirty-item .di-badge {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: #0A0D16;
+}
+
+.dirty-item .di-name {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dirty-item .di-lbl {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+/* SSE Streaming diagram */
+
+.sse-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+
+.sse-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.sse-step .ss-icon {
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+}
+
+.sse-step .ss-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.sse-arrow {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+/* ════════════════════════════════════════════════════════
+   ADR Cards
+   ════════════════════════════════════════════════════════ */
+
+.adr-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.adr-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 18px;
+  transition: all 0.25s;
+}
+
+.adr-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+}
+
+.adr-card .adr-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.adr-card .adr-title .adr-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.adr-card .adr-section {
+  margin-bottom: 8px;
+}
+
+.adr-card .adr-section:last-child {
+  margin-bottom: 0;
+}
+
+.adr-card .adr-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.adr-card .adr-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ════════════════════════════════════════════════════════
+   Performance Metrics
+   ════════════════════════════════════════════════════════ */
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.metric-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 14px;
+  text-align: center;
+  transition: all 0.25s;
+}
+
+.metric-card:hover { transform: translateY(-2px); }
+
+.metric-card .mc-num {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  line-height: 1;
+}
+
+.metric-card .mc-unit {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-weight: 500;
+  margin: 2px 0 4px;
+}
+
+.metric-card .mc-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.metric-card .mc-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.metric-card.mc-latency  .mc-num { color: var(--color-api); }
+.metric-card.mc-thoughput .mc-num { color: var(--color-fusion); }
+.metric-card.mc-memory   .mc-num { color: var(--color-graph); }
+.metric-card.mc-scale    .mc-num { color: var(--color-bm25); }
+
+.latency-bd {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 16px;
+}
+
+.latency-bd .lb-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.latency-bd .lb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.latency-bd .lb-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 140px;
+  text-align: right;
+}
+
+.latency-bd .lb-bar-wrap {
+  flex: 1;
+  height: 18px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+}
+
+.latency-bd .lb-bar {
+  height: 100%;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  color: #0A0D16;
+  min-width: 28px;
+}
+
+.latency-bd .lb-val {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 65px;
+  text-align: right;
+}
+
+/* Failure modes */
+
+.failure-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.failure-card {
+  background: var(--bg-card);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 14px;
+  display: flex;
+  gap: 12px;
+  transition: all 0.25s;
+}
+
+.failure-card:hover { border-color: rgba(255,255,255,0.08); }
+
+.failure-card .fc-icon {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border-light);
+}
+
+.failure-card .fc-body { flex: 1; min-width: 0; }
+
+.failure-card .fc-scenario {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1px;
+}
+
+.failure-card .fc-effect {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.failure-card .fc-mitigation {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  background: var(--bg-primary);
+  border-radius: 4px;
+  padding: 3px 7px;
+  display: inline-block;
+  border: 1px solid var(--border-light);
+  line-height: 1.4;
+}
+
+/* ════════════════════════════════════════════════════════
+   Animations
+   ════════════════════════════════════════════════════════ */
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.step { animation: fadeUp 0.5s ease-out both; }
+.step:nth-child(3) { animation-delay: 0.05s; }
+.step:nth-child(5) { animation-delay: 0.1s; }
+.step:nth-child(7) { animation-delay: 0.15s; }
+.step:nth-child(9) { animation-delay: 0.2s; }
+.step:nth-child(11) { animation-delay: 0.25s; }
+
+/* ════════════════════════════════════════════════════════
+   Responsive
+   ════════════════════════════════════════════════════════ */
+
+@media (max-width: 1100px) {
+  .retrieval-grid { grid-template-columns: 1fr; }
+  .fusion-grid { grid-template-columns: 1fr; }
+  .syn-grid { grid-template-columns: 1fr; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .side-paths { grid-template-columns: 1fr; }
+  .dirty-row { grid-template-columns: 1fr 1fr; }
+  .api-grid { grid-template-columns: 1fr; }
+  .adr-grid { grid-template-columns: 1fr; }
+  .perf-grid { grid-template-columns: 1fr; }
+  .failure-grid { grid-template-columns: 1fr; }
+  header h1 { font-size: 32px; }
+}
+
+@media (max-width: 640px) {
+  header h1 { font-size: 26px; }
+  .container { padding: 0 14px; }
+  .step { padding: 18px; }
+  .dirty-row { grid-template-columns: 1fr; }
+  .inc-arrow { display: none; }
+  .ov-row { gap: 4px; }
+  .ov-node { padding: 5px 8px; }
+  .metric-grid { grid-template-columns: 1fr; }
+  .latency-bd .lb-label { min-width: 80px; font-size: 10px; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<!-- ════════════════════════════════════════════════════════
+     Header
+     ════════════════════════════════════════════════════════ -->
+
+<header>
+  <div class="repo-badge">
+    <span class="dot"></span>
+    InsightMiner · v0.1.0
+  </div>
+  <h1>智能知识库问答系统</h1>
+  <div class="sub">
+    Intelligent Knowledge Base Q&amp;A — FastAPI · LangGraph · Hybrid RAG
+  </div>
+  <div class="tech-badges">
+    <span style="background:var(--color-api-bg);color:var(--color-api);border:1px solid rgba(75,139,255,0.2);">FastAPI</span>
+    <span style="background:var(--color-api-bg);color:var(--color-api);border:1px solid rgba(75,139,255,0.2);">LangGraph</span>
+    <span style="background:var(--color-api-bg);color:var(--color-api);border:1px solid rgba(75,139,255,0.2);">ChromaDB</span>
+    <span style="background:var(--color-bm25-bg);color:var(--color-bm25);border:1px solid rgba(255,138,75,0.2);">BM25Okapi</span>
+    <span style="background:var(--color-graph-bg);color:var(--color-graph);border:1px solid rgba(168,85,247,0.2);">NetworkX</span>
+    <span style="background:var(--color-rerank-bg, rgba(244,114,182,0.08));color:var(--color-rerank);border:1px solid rgba(244,114,182,0.2);">CrossEncoder</span>
+    <span style="background:var(--color-llm-bg, rgba(251,191,36,0.08));color:var(--color-llm);border:1px solid rgba(251,191,36,0.2);">DeepSeek/Ollama</span>
+    <span style="background:var(--color-memory-bg);color:var(--color-memory);border:1px solid rgba(236,72,153,0.2);">SQLite</span>
+  </div>
+</header>
+
+<!-- ════════════════════════════════════════════════════════
+     Architecture Overview
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">A</span>
+  Architecture Overview
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 系统架构总览</span>
+</div>
+
+<div class="overview">
+  <!-- Row 1: Client → FastAPI → ChatService -->
+  <div class="ov-row">
+    <div class="ov-node">
+      <span class="ov-name">Client</span>
+      <span class="ov-desc">HTTP / SSE</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-api">
+      <span class="ov-name">FastAPI</span>
+      <span class="ov-desc">REST · CORS</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-llm">
+      <span class="ov-name">LangGraph</span>
+      <span class="ov-desc">State Machine</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-llm">
+      <span class="ov-name">Intent Classifier</span>
+      <span class="ov-desc">LLM: intent + rewrite + entities</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.2);background:var(--bg-primary);">
+      <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-display);font-weight:500;">kb · web · chat · clarify</span>
+    </div>
+  </div>
+
+  <!-- Row 2: KB path -->
+  <div class="ov-path-label">— KB 主路径 —</div>
+  <div class="ov-row">
+    <div class="ov-node highlight-api">
+      <span class="ov-name">Dense</span>
+      <span class="ov-desc">ChromaDB · top-20</span>
+    </div>
+    <div class="ov-node highlight-bm25">
+      <span class="ov-name">BM25</span>
+      <span class="ov-desc">Keyword · top-20</span>
+    </div>
+    <div class="ov-node highlight-graph">
+      <span class="ov-name">Graph</span>
+      <span class="ov-desc">BFS · top-40</span>
+    </div>
+    <span class="ov-arrow">⤵</span>
+    <div class="ov-node highlight-fusion">
+      <span class="ov-name">RRF</span>
+      <span class="ov-desc">k=60 · ~45 merged</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-rerank">
+      <span class="ov-name">CrossEncoder</span>
+      <span class="ov-desc">10 → 3</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node highlight-llm">
+      <span class="ov-name">LLM</span>
+      <span class="ov-desc">Synthesize · Review</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(34,211,160,0.3);background:rgba(34,211,160,0.06);">
+      <span class="ov-name" style="color:var(--color-fusion);">Output</span>
+      <span class="ov-desc">JSON answer</span>
+    </div>
+  </div>
+
+  <!-- Row 3: Services -->
+  <div class="ov-path-label">— 基础设施服务 —</div>
+  <div class="ov-row">
+    <div class="ov-node highlight-memory">
+      <span class="ov-name">Memory</span>
+      <span class="ov-desc">SQLite · 会话持久化</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">KB Manager</span>
+      <span class="ov-desc">CRUD · 增量更新</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">Document</span>
+      <span class="ov-desc">txt/pdf/docx · 分块</span>
+    </div>
+    <span class="ov-arrow">→</span>
+    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
+      <span class="ov-name">LLM Factory</span>
+      <span class="ov-desc">DeepSeek / Ollama</span>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section B: API Layer
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">B</span>
+  API Layer
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— REST API 端点与服务注入</span>
+</div>
+
+<div class="step" style="padding:24px 28px;">
+  <div class="step-header">
+    <div class="step-number">①</div>
+    <div class="step-title">
+      FastAPI Application
+      <small>异步框架 · 依赖注入 · CORS · lifespan 生命周期</small>
+    </div>
+    <span class="tag tag-api" style="margin-left:auto;">uvicorn</span>
+  </div>
+
+  <!-- API Endpoints Grid -->
+  <div style="font-family:var(--font-display);font-size:13px;font-weight:600;margin-bottom:10px;">Chat Endpoints</div>
+  <div class="api-grid">
+    <div class="api-card" style="border-left:3px solid var(--color-fusion);">
+      <div class="ac-head">
+        <span>/api/chat</span>
+        <span class="ac-method method-post">POST</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">Input</span><span class="p-val">ChatRequest {question, thread_id?, kb_id}</span></div>
+        <div class="p-row"><span class="p-lbl">Output</span><span class="p-val">ChatResponse {answer, evidences, intent}</span></div>
+        <div class="p-row"><span class="p-lbl">Mode</span><span class="p-val">Batch (LangGraph ainvoke)</span></div>
+      </div>
+    </div>
+    <div class="api-card" style="border-left:3px solid var(--color-llm);">
+      <div class="ac-head">
+        <span>/api/chat/stream</span>
+        <span class="ac-method method-post">POST</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">Input</span><span class="p-val">ChatRequest {question, thread_id?, kb_id}</span></div>
+        <div class="p-row"><span class="p-lbl">Output</span><span class="p-val">SSE stream: token/intent/evidence/done</span></div>
+        <div class="p-row"><span class="p-lbl">Mode</span><span class="p-val">Streaming (astream_events)</span></div>
+      </div>
+    </div>
+    <div class="api-card" style="border-left:3px solid var(--color-memory);">
+      <div class="ac-head">
+        <span>/api/chat/history</span>
+        <span class="ac-method method-get">GET</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">List</span><span class="p-val">GET /api/chat/history</span></div>
+        <div class="p-row"><span class="p-lbl">Detail</span><span class="p-val">GET /api/chat/history/{thread_id}</span></div>
+        <div class="p-row"><span class="p-lbl">Delete</span><span class="p-val">DELETE /api/chat/history/{thread_id}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="font-family:var(--font-display);font-size:13px;font-weight:600;margin:14px 0 10px;">Knowledge Base Endpoints</div>
+  <div class="api-grid">
+    <div class="api-card" style="border-left:3px solid var(--color-api);">
+      <div class="ac-head">
+        <span>Knowledge Bases</span>
+        <span class="ac-method method-get">GET</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">List</span><span class="p-val">GET /api/knowledge-bases</span></div>
+        <div class="p-row"><span class="p-lbl">Create</span><span class="p-val">POST /api/knowledge-bases?kb_id=...</span></div>
+        <div class="p-row"><span class="p-lbl">Delete</span><span class="p-val">DELETE /api/knowledge-bases/{kb_id}</span></div>
+      </div>
+    </div>
+    <div class="api-card" style="border-left:3px solid var(--color-fusion);">
+      <div class="ac-head">
+        <span>Documents</span>
+        <span class="ac-method method-post">POST</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">List</span><span class="p-val">GET /api/knowledge-bases/{kb_id}/documents</span></div>
+        <div class="p-row"><span class="p-lbl">Upload</span><span class="p-val">POST /api/knowledge-bases/{kb_id}/documents</span></div>
+        <div class="p-row"><span class="p-lbl">Delete</span><span class="p-val">DELETE .../{kb_id}/documents/{filename}</span></div>
+      </div>
+    </div>
+    <div class="api-card" style="border-left:3px solid var(--color-fusion);">
+      <div class="ac-head">
+        <span>System</span>
+        <span class="ac-method method-get">GET</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">Health</span><span class="p-val">GET /api/system/health</span></div>
+        <div class="p-row"><span class="p-lbl">Response</span><span class="p-val">{ "status": "ok" }</span></div>
+        <div class="p-row"><span class="p-lbl">Deps</span><span class="p-val">dependency_overrides injection</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dependency Injection -->
+  <div class="code-snip" style="margin-top:14px;font-size:11px;"><span class="hl-c">// main.py — 应用启动 & 依赖注入模式</span>
+<span class="hl-v">@asynccontextmanager</span>
+async def lifespan(app):
+    <span class="hl-c"># 启动时：初始化服务 → 预加载 KB 索引</span>
+    _inject_deps(app)
+    await loop.run_in_executor(None, kb_manager.get_index, <span class="hl-s">"default"</span>)
+    <span class="hl-k">yield</span>
+    <span class="hl-c"># 关闭时：持久化所有脏索引</span>
+    kb_manager.shutdown()
+
+app = FastAPI(title=<span class="hl-s">"InsightMiner"</span>, version=<span class="hl-s">"0.1.0"</span>, lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=[<span class="hl-s">"*"</span>])
+app.include_router(kb_api.router)
+app.include_router(chat_api.router)</div>
+</div>
+
+<div class="arrow-connector"></div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section C: Query Pipeline
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">C</span>
+  Query Pipeline
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— LangGraph 状态机查询处理流程</span>
+</div>
+
+<div class="flow">
+
+<!-- ───────── Step 1: Intent Classification ──────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">1</div>
+    <div class="step-title">
+      Intent Classification &amp; Query Rewriting
+      <small>意图分类 · 查询重写 · 实体提取</small>
+    </div>
+    <span class="tag tag-llm" style="margin-left:auto;">One-shot LLM</span>
+  </div>
+
+  <div class="intent-grid">
+    <div class="intent-card">
+      <div class="label intent">Intent</div>
+      <div class="value">
+        四分类：<strong style="color:var(--color-api);">kb</strong>（默认）·
+        <span style="color:#94A3B8;">web</span> ·
+        <span style="color:#94A3B8;">chat</span> ·
+        <span style="color:#94A3B8;">clarify</span>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-muted);font-family:var(--font-display);">
+        优先级: web &gt; clarify &gt; <strong>kb</strong> &gt; chat
+      </div>
+    </div>
+    <div class="intent-card">
+      <div class="label query">Query Rewriting</div>
+      <div class="value">
+        模糊时间 → 具体日期<br>
+        代词 → 显式实体<br>
+        口语 → 检索友好措辞
+      </div>
+    </div>
+    <div class="intent-card">
+      <div class="label entity">Entity Extraction</div>
+      <div class="value">
+        专有名词 · 人名/地名<br>
+        技术术语 · 产品名<br>
+        仅 kb/web 意图有效
+      </div>
+    </div>
+  </div>
+
+  <div class="code-snip"><span class="hl-c">// One-shot LLM call — 同时完成三项任务</span>
+{
+  <span class="hl-k">"intent"</span>:          <span class="hl-s">"kb"</span>,
+  <span class="hl-k">"rewritten_query"</span>: <span class="hl-s">"知识库问答RAG系统 架构设计 2026"</span>,
+  <span class="hl-k">"entities"</span>:        [<span class="hl-s">"RAG"</span>, <span class="hl-s">"LangGraph"</span>, <span class="hl-s">"ChromaDB"</span>]
+}</div>
+</div>
+
+<div class="arrow-connector"></div>
+
+<!-- ───────── Branch Labels ───────────── -->
+
+<div class="branch-labels" style="display:flex;justify-content:center;gap:16px;padding:8px 0;flex-wrap:wrap;">
+  <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:var(--color-api-bg);color:var(--color-api);border:1px solid rgba(75,139,255,0.2);">kb (default)</span>
+  <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:rgba(148,163,184,0.06);color:#94A3B8;border:1px solid rgba(148,163,184,0.12);">web</span>
+  <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:rgba(148,163,184,0.06);color:#94A3B8;border:1px solid rgba(148,163,184,0.12);">chat</span>
+  <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:rgba(148,163,184,0.06);color:#94A3B8;border:1px solid rgba(148,163,184,0.12);">clarify</span>
+</div>
+
+<div class="arrow-connector"></div>
+
+<!-- ───────── Step 2: Three Retrieval Paths ──────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">2</div>
+    <div class="step-title">
+      Three-Way Parallel Retrieval
+      <small>三路并行检索</small>
+    </div>
+    <span class="tag tag-api" style="margin-left:auto;">asyncio.gather</span>
+  </div>
+
+  <div class="retrieval-grid">
+    <div class="retrieval-card card-dense">
+      <div class="card-head">
+        <span>Semantic Search</span>
+        <span class="tag tag-api tag-sm">top-20</span>
+      </div>
+      <div class="card-body">
+        <div class="p-row"><span class="p-lbl">Engine</span><span class="p-val">ChromaDB (langchain-chroma)</span></div>
+        <div class="p-row"><span class="p-lbl">Embedding</span><span class="p-val">all-MiniLM-L6-v2 (384d)</span></div>
+        <div class="p-row"><span class="p-lbl">Distance</span><span class="p-val">L2 → normalized to 0-1</span></div>
+        <div class="p-row"><span class="p-lbl">Lookup</span><span class="p-val">chunk_id → chunk_ids.index()</span></div>
+        <div class="path-strength">
+          <div class="ps-label">Strengths</div>
+          <div class="ps-text">捕获语义相似但词汇不重叠的匹配 · 对同义词/近义词鲁棒 · 跨语言概念匹配</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="retrieval-card card-bm25">
+      <div class="card-head">
+        <span>Keyword Search</span>
+        <span class="tag tag-bm25 tag-sm">top-20</span>
+      </div>
+      <div class="card-body">
+        <div class="p-row"><span class="p-lbl">Engine</span><span class="p-val">rank-bm25 (BM25Okapi)</span></div>
+        <div class="p-row"><span class="p-lbl">Tokenizer</span><span class="p-val">中英混合 · unigram + bigram</span></div>
+        <div class="p-row"><span class="p-lbl">Index</span><span class="p-val">bm25_index.pkl (pickle)</span></div>
+        <div class="p-row"><span class="p-lbl">Token Ex.</span><span class="p-val">"知识库" → ["知","识","库","知识","识库","知识库"]</span></div>
+        <div class="path-strength">
+          <div class="ps-label">Strengths</div>
+          <div class="ps-text">精确关键词匹配 · 对罕见术语/代码片段友好 · 不依赖训练数据分布</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="retrieval-card card-graph">
+      <div class="card-head">
+        <span>Graph Search</span>
+        <span class="tag tag-graph tag-sm">top-40</span>
+      </div>
+      <div class="card-body">
+        <div class="p-row"><span class="p-lbl">Engine</span><span class="p-val">NetworkX (entity co-occurrence)</span></div>
+        <div class="p-row"><span class="p-lbl">Entities</span><span class="p-val">启发式 (index) + LLM (query)</span></div>
+        <div class="p-row"><span class="p-lbl">Traversal</span><span class="p-val">BFS · cutoff=3</span></div>
+        <div class="p-row"><span class="p-lbl">Chaining</span><span class="p-val">adjacent chunk +0.05~0.1</span></div>
+        <div class="p-row"><span class="p-lbl">Scoring</span><span class="p-val">exact=3.0 / neighbor=2.0 / expanded=1.0/d</span></div>
+        <div class="path-strength">
+          <div class="ps-label">Strengths</div>
+          <div class="ps-text">桥接语义鸿沟 · 跨 chunk 实体关联 · 补全 dense/BM25 盲区</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison Table -->
+  <div class="compact-table-wrap">
+    <table class="compact-table">
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th style="color:var(--color-api);">Semantic (Dense)</th>
+          <th style="color:var(--color-bm25);">Keyword (BM25)</th>
+          <th style="color:var(--color-graph);">Entity Graph</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="td-label">Matching</td>
+          <td>语义空间距离</td>
+          <td>词汇精确匹配</td>
+          <td>实体共现关系</td>
+        </tr>
+        <tr>
+          <td class="td-label">Recall</td>
+          <td>高 (语义相近即可)</td>
+          <td>低 (必须词重叠)</td>
+          <td>中 (通过实体跳转)</td>
+        </tr>
+        <tr>
+          <td class="td-label">Precision</td>
+          <td>中 (可能语义漂移)</td>
+          <td>高 (词级精确)</td>
+          <td>高 (实体级精确)</td>
+        </tr>
+        <tr>
+          <td class="td-label">Training</td>
+          <td>需要预训练模型</td>
+          <td>无需训练</td>
+          <td>无需训练</td>
+        </tr>
+        <tr>
+          <td class="td-label">Query Entity</td>
+          <td>不感知实体边界</td>
+          <td>不感知实体边界</td>
+          <td>实体感知 + 邻接扩展</td>
+        </tr>
+        <tr>
+          <td class="td-label">Cold Start</td>
+          <td>依赖模型</td>
+          <td>即时可用</td>
+          <td>需构建图</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="arrow-connector" style="background:linear-gradient(180deg,var(--border),var(--color-fusion));"></div>
+<div class="arrow-connector" style="background:linear-gradient(180deg,var(--color-fusion),var(--color-fusion));height:12px;"></div>
+
+<!-- ───────── Step 3: RRF + CrossEncoder ────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">3</div>
+    <div class="step-title">
+      RRF Fusion &amp; CrossEncoder Re-ranking
+      <small>倒数排名融合 + 精排</small>
+    </div>
+    <span class="tag tag-fusion" style="margin-left:auto;">k=60</span>
+  </div>
+
+  <div class="fusion-grid">
+    <div class="proc-card pc-fusion">
+      <div class="pc-title">
+        <span style="color:var(--color-fusion);">RRF</span> Reciprocal Rank Fusion
+      </div>
+      <div class="pc-formula">
+        RRF_score(chunk) = <span class="hl-f">Σ</span> 1 / (k + rank<sub>i</sub>)
+        <br><span style="font-family:var(--font-body);color:var(--text-muted);">— 只依赖排名位置，不依赖原始分数</span>
+      </div>
+      <div class="pc-stats">
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-api);">20</span>
+          <span class="lbl">Dense</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-bm25);">20</span>
+          <span class="lbl">BM25</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-graph);">40</span>
+          <span class="lbl">Graph</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-fusion);">80</span>
+          <span class="lbl">Input</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num">~45</span>
+          <span class="lbl">Merged</span>
+        </div>
+      </div>
+
+      <div class="rrf-worked">
+        <div class="rw-title">Worked Example — 3 chunks, k=60</div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>Chunk</th>
+              <th style="color:var(--color-api);">Dense Rank</th>
+              <th style="color:var(--color-bm25);">BM25 Rank</th>
+              <th style="color:var(--color-graph);">Graph Rank</th>
+              <th style="color:var(--color-fusion);">RRF Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="td-label">Chunk A</td>
+              <td>1 (1/61=0.0164)</td>
+              <td>3 (1/63=0.0159)</td>
+              <td>—</td>
+              <td><strong style="color:var(--color-fusion);">0.0323</strong></td>
+            </tr>
+            <tr>
+              <td class="td-label">Chunk B</td>
+              <td>5 (1/65=0.0154)</td>
+              <td>—</td>
+              <td>1 (1/61=0.0164)</td>
+              <td><strong style="color:var(--color-fusion);">0.0318</strong></td>
+            </tr>
+            <tr>
+              <td class="td-label">Chunk C</td>
+              <td>—</td>
+              <td>1 (1/61=0.0164)</td>
+              <td>—</td>
+              <td><strong style="color:var(--color-fusion);">0.0164</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="proc-card pc-rerank">
+      <div class="pc-title">
+        <span style="color:var(--color-rerank);">CE</span> CrossEncoder Re-ranking
+      </div>
+      <div class="pc-formula">
+        score(q, d) = model([<span class="hl-r">CLS</span>] q [<span class="hl-r">SEP</span>] d[:1024] [<span class="hl-r">SEP</span>])
+        <br><span style="font-family:var(--font-body);color:var(--text-muted);">— BAAI/bge-reranker-base · pairwise scoring</span>
+      </div>
+      <div class="pc-stats">
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-rerank);">10</span>
+          <span class="lbl">RRF Top-N</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num" style="color:var(--color-rerank);">3~5</span>
+          <span class="lbl">Final</span>
+        </div>
+        <div class="pc-stat">
+          <span class="num">~1s</span>
+          <span class="lbl">10 pairs</span>
+        </div>
+      </div>
+      <div class="pc-formula" style="margin-top:10px;font-size:11px;">
+        <span style="color:var(--text-muted);">// 动态截断：保留分数 ≥ top-1 × 0.7</span>
+        q: <span style="color:var(--color-api);">"RAG 系统架构"</span>
+        d: <span style="color:var(--color-bm25);">"混合检索架构包括..."</span>
+        <br>→ score: <span style="color:var(--color-rerank);font-weight:600;">0.872</span>
+        <span style="color:var(--text-muted);">  |  confidence_pct: <span style="color:var(--color-fusion);">86.3%</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-connector" style="background:linear-gradient(180deg,var(--border),var(--color-llm));height:28px;"></div>
+
+<!-- ───────── Step 4: LLM Synthesis + Self-Review ────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">4</div>
+    <div class="step-title">
+      Answer Synthesis &amp; Self-Review
+      <small>答案合成 · 质量审计 · SSE 流式</small>
+    </div>
+    <span class="tag tag-llm" style="margin-left:auto;">DeepSeek/Ollama</span>
+  </div>
+
+  <div class="syn-grid">
+    <div class="syn-card" style="border-color:rgba(251,191,36,0.15);">
+      <div class="syn-title">
+        <span style="color:var(--color-llm);">LLM</span> Synthesize Answer
+        <span class="tag tag-llm tag-sm" style="margin-left:auto;">SYNTHESIZE_PROMPT</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Input</span>
+        <span class="p-val">question + context + re-ranked docs + history</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Temperature</span>
+        <span class="p-val">0.2 (batch) / streaming</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Evidence</span>
+        <span class="p-val">min-max 归一化置信度 %</span>
+      </div>
+      <div class="code-snip" style="margin-top:8px;font-size:11px;">{
+  <span class="hl-k">"answer"</span>:          <span class="hl-s">"InsightMiner 采用三路混合检索架构..."</span>,
+  <span class="hl-k">"rewritten_query"</span>: <span class="hl-s">"RAG 系统三路混合检索架构"</span>,
+  <span class="hl-k">"data_sources"</span>: [
+    { <span class="hl-k">"source_type"</span>: <span class="hl-s">"knowledge_base"</span>,
+      <span class="hl-k">"evidences"</span>: [
+        { <span class="hl-k">"evidence"</span>: <span class="hl-s">"Dense + BM25 + Graph..."</span>,
+          <span class="hl-k">"score"</span>: <span class="hl-v">0.95</span>,
+          <span class="hl-k">"confidence_pct"</span>: <span class="hl-v">86.3</span> }
+      ] }
+  ]
+}</div>
+    </div>
+
+    <div class="syn-card">
+      <div class="syn-title">
+        <span style="color:var(--color-llm);">LLM</span> Self-Review Loop
+        <span class="tag tag-llm tag-sm" style="margin-left:auto;">REVIEW_PROMPT</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Judge</span>
+        <span class="p-val">LLM-as-judge · 1–5 scoring</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Pass</span>
+        <span class="p-val" style="color:var(--color-fusion);font-weight:600;">score ≥ 3 → END</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Retry</span>
+        <span class="p-val" style="color:var(--color-bm25);">score &lt; 3 → re-synthesize</span>
+      </div>
+      <div class="p-row">
+        <span class="p-lbl">Max Retries</span>
+        <span class="p-val">2</span>
+      </div>
+
+      <div class="rrf-worked" style="margin-top:10px;">
+        <div class="rw-title">Review Criteria</div>
+        <table class="compact-table">
+          <thead>
+            <tr>
+              <th>Score</th>
+              <th>Meaning</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="td-label">5</td><td>Perfect</td><td style="color:var(--color-fusion);">✓ Accept</td></tr>
+            <tr><td class="td-label">4</td><td>Good</td><td style="color:var(--color-fusion);">✓ Accept</td></tr>
+            <tr><td class="td-label">3</td><td>Acceptable</td><td style="color:var(--color-fusion);">✓ Accept</td></tr>
+            <tr><td class="td-label">2</td><td>Deficient</td><td style="color:var(--color-bm25);">⟳ Retry</td></tr>
+            <tr><td class="td-label">1</td><td>Severe Error</td><td style="color:var(--color-bm25);">⟳ Retry</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-connector"></div>
+
+<!-- ───────── Step 5: SSE Streaming Pattern ────────── -->
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-number">5</div>
+    <div class="step-title">
+      SSE Streaming &amp; Memory
+      <small>流式响应 · 会话管理 · 对话历史</small>
+    </div>
+    <span class="tag tag-llm" style="margin-left:auto;">astream_events</span>
+  </div>
+
+  <!-- SSE Flow Diagram -->
+  <div class="sse-flow">
+    <div class="sse-step">
+      <div class="ss-icon" style="background:var(--color-api-bg);color:var(--color-api);border-color:rgba(75,139,255,0.25);">C</div>
+      <span class="ss-label">classify</span>
+    </div>
+    <span class="sse-arrow">→</span>
+    <div class="sse-step">
+      <div class="ss-icon" style="background:var(--color-fusion-bg, rgba(34,211,160,0.1));color:var(--color-fusion);border-color:rgba(34,211,160,0.25);">R</div>
+      <span class="ss-label">retrieve</span>
+    </div>
+    <span class="sse-arrow">→</span>
+    <div class="sse-step">
+      <div class="ss-icon" style="background:var(--color-llm-bg, rgba(251,191,36,0.1));color:var(--color-llm);border-color:rgba(251,191,36,0.25);">G</div>
+      <span class="ss-label">generate</span>
+    </div>
+    <span class="sse-arrow">→</span>
+    <div class="sse-step">
+      <div class="ss-icon" style="background:var(--color-fusion-bg, rgba(34,211,160,0.1));color:var(--color-fusion);border-color:rgba(34,211,160,0.25);">✓</div>
+      <span class="ss-label">done</span>
+    </div>
+  </div>
+
+  <!-- SSE Events -->
+  <div class="code-snip" style="font-size:11px;"><span class="hl-c">// Server-Sent Events — 五个事件类型</span>
+<span class="hl-v">event: thread_id</span>     → { <span class="hl-s">"thread_id"</span>: <span class="hl-s">"a1b2c3d4e5f6"</span> }
+<span class="hl-v">event: status</span>        → { <span class="hl-s">"phase"</span>: <span class="hl-s">"classifying"</span>, <span class="hl-s">"message"</span>: <span class="hl-s">"正在理解问题..."</span> }
+<span class="hl-v">event: intent</span>        → { <span class="hl-s">"intent"</span>: <span class="hl-s">"kb"</span> }
+<span class="hl-v">event: evidence</span>      → { <span class="hl-s">"evidences"</span>: [{ <span class="hl-s">"content"</span>: <span class="hl-s">"..."</span>, <span class="hl-s">"score"</span>: <span class="hl-v">0.95</span>, <span class="hl-s">"confidence_pct"</span>: <span class="hl-v">86.3</span> }] }
+<span class="hl-v">event: token</span>         → { <span class="hl-s">"token"</span>: <span class="hl-s">"InsightMiner"</span> }  <span class="hl-c">// 逐 token 流式</span>
+<span class="hl-v">event: done</span>          → { <span class="hl-s">"rewritten_query"</span>: <span class="hl-s">""</span> }</div>
+
+  <!-- Memory service -->
+  <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+    <div class="detail-card" style="border-left:3px solid var(--color-memory);">
+      <div class="dc-head">
+        <span>Memory Service</span>
+        <span class="tag tag-memory tag-sm">SQLite</span>
+      </div>
+      <div class="dc-body">
+        <div class="p-row"><span class="p-lbl">Storage</span><span class="p-val">conversations.db</span></div>
+        <div class="p-row"><span class="p-lbl">Tables</span><span class="p-val">conversations + messages</span></div>
+        <div class="p-row"><span class="p-lbl">Thread ID</span><span class="p-val">UUID hex[:12]</span></div>
+        <div class="p-row"><span class="p-lbl">History Limit</span><span class="p-val">20 messages per thread</span></div>
+        <div class="p-row"><span class="p-lbl">Thread-KB</span><span class="p-val">kb_id binding</span></div>
+      </div>
+    </div>
+    <div class="detail-card" style="border-left:3px solid var(--color-llm);">
+      <div class="dc-head">
+        <span>LLM Factory</span>
+        <span class="tag tag-llm tag-sm">Pluggable</span>
+      </div>
+      <div class="dc-body">
+        <div class="p-row"><span class="p-lbl">Provider</span><span class="p-val">config: LLM_PROVIDER</span></div>
+        <div class="p-row"><span class="p-lbl">DeepSeek</span><span class="p-val">ChatDeepSeek (API)</span></div>
+        <div class="p-row"><span class="p-lbl">Ollama</span><span class="p-val">ChatOllama (local)</span></div>
+        <div class="p-row"><span class="p-lbl">Timeout</span><span class="p-val">60s (DeepSeek) / 120s (Ollama)</span></div>
+        <div class="p-row"><span class="p-lbl">Fallback</span><span class="p-val">kb intent when empty KB</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /.flow -->
+
+<!-- ════════════════════════════════════════════════════════
+     Section D: Side Paths
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">D</span>
+  Alternative Paths
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— chat / clarify / web 分支</span>
+</div>
+
+<div class="step" style="padding:20px 28px;">
+  <div class="side-paths">
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon">C</div>
+        <span class="sp-name">Chat (闲聊)</span>
+      </div>
+      <div class="sp-desc">问候寒暄、自我介绍等非知识类对话。LLM 直接回答，不走检索路径。</div>
+      <div class="sp-flow">CHAT_PROMPT → LLM → JSON answer</div>
+    </div>
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon">?</div>
+        <span class="sp-name">Clarify (澄清)</span>
+      </div>
+      <div class="sp-desc">问题模糊或存在歧义时，主动反问引导用户补充上下文。</div>
+      <div class="sp-flow">CLARIFY_PROMPT → LLM → 反问句</div>
+    </div>
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon">W</div>
+        <span class="sp-name">Web Search</span>
+      </div>
+      <div class="sp-desc">用户明确要求上网搜索时，调用 Tavily API 获取实时结果。</div>
+      <div class="sp-flow">Tavily search → SYNTHESIZE_PROMPT → answer</div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section E: System Architecture
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">E</span>
+  System Architecture
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 技术栈 · 分块策略 · 图检索 · 增量更新</span>
+</div>
+
+<div class="step" style="padding:24px 28px;">
+  <div style="font-family:var(--font-display);font-size:15px;font-weight:600;margin-bottom:14px;">Tech Stack</div>
+  <div class="compact-table-wrap">
+    <table class="tech-table">
+      <thead>
+        <tr><th>Layer</th><th>Component</th><th>Version</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-api);">Framework</td>
+          <td>FastAPI + uvicorn</td>
+          <td>≥0.115</td>
+          <td>Async web server, CORS, lifespan events</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-llm);">Orchestration</td>
+          <td>langgraph</td>
+          <td>≥0.3.0</td>
+          <td>State machine with MemorySaver checkpoint</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-api);">Vector Store</td>
+          <td>chromadb + langchain-chroma</td>
+          <td>≥0.5.0</td>
+          <td>Dense embedding index, SQLite persistence</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-api);">Embedding</td>
+          <td>all-MiniLM-L6-v2</td>
+          <td>—</td>
+          <td>384-dim sentence transformer, local only</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-bm25);">Sparse Index</td>
+          <td>rank-bm25 (BM25Okapi)</td>
+          <td>≥0.2.2</td>
+          <td>Keyword retrieval with CJK bigram tokenizer</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-graph);">Knowledge Graph</td>
+          <td>networkx</td>
+          <td>≥3.0</td>
+          <td>Entity co-occurrence graph, BFS traversal</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-rerank);">Re-ranker</td>
+          <td>BAAI/bge-reranker-base</td>
+          <td>—</td>
+          <td>CrossEncoder, sentence-transformers</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-llm);">LLM</td>
+          <td>DeepSeek (API) / Ollama (local)</td>
+          <td>—</td>
+          <td>Intent classification + answer synthesis + review</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-memory);">Memory</td>
+          <td>SQLite (manual)</td>
+          <td>—</td>
+          <td>Conversation history, thread management</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-llm);">Splitter</td>
+          <td>RecursiveCharacterTextSplitter</td>
+          <td>—</td>
+          <td>chunk_size=512, chunk_overlap=64</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Detail grid -->
+<div class="detail-grid">
+
+  <!-- Chunking Strategy -->
+  <div class="detail-card">
+    <div class="dc-head">
+      <span>Chunking Strategy</span>
+      <span class="tag tag-api tag-sm">512 / 64</span>
+    </div>
+    <div class="dc-body">
+      <div class="p-row"><span class="p-lbl">Splitter</span><span class="p-val">RecursiveCharacterTextSplitter</span></div>
+      <div class="p-row"><span class="p-lbl">Split chars</span><span class="p-val">\n\n → \n → 。 → .</span></div>
+      <div class="p-row"><span class="p-lbl">Chunk Size</span><span class="p-val">512 characters</span></div>
+      <div class="p-row"><span class="p-lbl">Overlap</span><span class="p-val">64 characters</span></div>
+      <div class="p-row"><span class="p-lbl">Supported Types</span><span class="p-val">txt/md/csv/json/yaml/pdf/docx</span></div>
+      <div class="code-snip" style="margin-top:8px;font-size:11px;"><span class="hl-c">// Chunk ID: {doc_id}_{idx:06d}</span>
+<span class="hl-v">a1b2c3d4</span>_000042
+<span class="hl-c">// doc_id = md5(fname)[:8]</span></div>
+    </div>
+  </div>
+
+  <!-- Manifest -->
+  <div class="detail-card">
+    <div class="dc-head">
+      <span>Manifest (v2)</span>
+      <span class="tag tag-bm25 tag-sm">MD5</span>
+    </div>
+    <div class="dc-body">
+      <div class="p-row"><span class="p-lbl">Format</span><span class="p-val">manifest.json</span></div>
+      <div class="p-row"><span class="p-lbl">Per file</span><span class="p-val">mtime + MD5 content hash</span></div>
+      <div class="p-row"><span class="p-lbl">Version check</span><span class="p-val" style="color:var(--color-fusion);">version != 2 → full rebuild</span></div>
+      <div class="p-row"><span class="p-lbl">Changes</span><span class="p-val">new / modified / deleted</span></div>
+      <div class="code-snip" style="margin-top:8px;font-size:11px;">{
+  <span class="hl-k">"version"</span>: <span class="hl-v">2</span>,
+  <span class="hl-k">"files"</span>: {
+    <span class="hl-s">"doc.txt"</span>: { <span class="hl-k">"mtime"</span>: <span class="hl-v">1234.0</span>,
+      <span class="hl-k">"hash"</span>: <span class="hl-s">"md5hex..."</span> }
+  }
+}</div>
+    </div>
+  </div>
+
+  <!-- Graph Scoring -->
+  <div class="detail-card">
+    <div class="dc-head">
+      <span>Graph Scoring Tiers</span>
+      <span class="tag tag-graph tag-sm">BFS cutoff=3</span>
+    </div>
+    <div class="dc-body">
+      <div class="g-tiers">
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-api);">3.0</span>
+          <span class="gt-label">Exact Match</span>
+          <span class="gt-desc">Query entity directly appears in chunk</span>
+        </div>
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-bm25);">2.0</span>
+          <span class="gt-label">Neighbor (d=1)</span>
+          <span class="gt-desc">Entity at BFS distance 1 connects to chunk</span>
+        </div>
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-graph);">1.0/d</span>
+          <span class="gt-label">Expanded (d≥2)</span>
+          <span class="gt-desc">Score decays with distance: ½, ⅓, …</span>
+        </div>
+        <div class="g-tier">
+          <span class="gt-score" style="color:var(--color-fusion);">+0~0.5</span>
+          <span class="gt-label">Co-occurrence Bonus</span>
+          <span class="gt-desc">0.5 × weight/(weight+5)</span>
+        </div>
+        <div class="g-tier" style="border-bottom:none;padding-bottom:0;">
+          <span class="gt-score" style="color:var(--color-rerank);">+0.1</span>
+          <span class="gt-label">Chunk Chaining</span>
+          <span class="gt-desc">Adjacent chunk in same doc gets bonus</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Incremental Update Pipeline -->
+<div class="step" style="margin-top:14px;">
+  <div class="step-header">
+    <div class="step-number">6</div>
+    <div class="step-title">
+      Incremental Update Pipeline
+      <small>增量更新流水线 · 脏标志延迟重建</small>
+    </div>
+    <span class="tag tag-fusion" style="margin-left:auto;">threading.Lock</span>
+  </div>
+
+  <div class="inc-pipe">
+    <div class="inc-step">
+      <div class="is-icon" style="background:var(--color-api-bg);color:var(--color-api);border-color:rgba(75,139,255,0.25);">U</div>
+      <span class="is-label">Upload Document</span>
+      <span class="is-desc">REST API → save file<br>→ add_texts() to ChromaDB</span>
+    </div>
+    <span class="inc-arrow">→</span>
+    <div class="inc-step">
+      <div class="is-icon" style="background:var(--color-bm25-bg);color:var(--color-bm25);border-color:rgba(255,138,75,0.25);">Δ</div>
+      <span class="is-label">Detect Changes</span>
+      <span class="is-desc">MD5 vs manifest<br>→ new / modified / deleted</span>
+    </div>
+    <span class="inc-arrow">→</span>
+    <div class="inc-step">
+      <div class="is-icon" style="background:var(--color-graph-bg);color:var(--color-graph);border-color:rgba(168,85,247,0.25);">±</div>
+      <span class="is-label">Apply Changes</span>
+      <span class="is-desc">delete old → add new<br>threading.Lock protected</span>
+    </div>
+    <span class="inc-arrow">→</span>
+    <div class="inc-step">
+      <div class="is-icon" style="background:rgba(34,211,160,0.15);color:var(--color-fusion);border-color:rgba(34,211,160,0.25);">⟳</div>
+      <span class="is-label">Finalize</span>
+      <span class="is-desc">rebuild BM25+Graph if dirty<br>save manifest</span>
+    </div>
+  </div>
+
+  <!-- Dirty Flags -->
+  <div class="dirty-row">
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-bm25);">B</span>
+      <span class="di-name">BM25</span>
+      <span class="di-lbl">dirty on change → rebuilt</span>
+    </div>
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-graph);">G</span>
+      <span class="di-name">Graph</span>
+      <span class="di-lbl">dirty on change → rebuilt</span>
+    </div>
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-api);">C</span>
+      <span class="di-name">ChromaDB</span>
+      <span class="di-lbl">delete-then-add in-place</span>
+    </div>
+    <div class="dirty-item">
+      <span class="di-badge" style="background:var(--color-llm);">M</span>
+      <span class="di-name">Manifest</span>
+      <span class="di-lbl">saved → next start reuse</span>
+    </div>
+  </div>
+
+  <!-- UML call chain -->
+  <div class="code-snip" style="margin-top:14px;font-size:11px;">
+<span class="hl-c">// 增量更新完整调用链</span>
+upload_document() → index.add_document()   <span class="hl-c">// ChromaDB add_texts, set dirty flags</span>
+  → index.finalize()                       <span class="hl-c">// rebuild BM25+Graph if dirty</span>
+  → _save_manifest()                       <span class="hl-c">// persist MD5 hashes</span>
+
+<span class="hl-c">// 启动时通过 manifest 检测变更</span>
+initialize() → detect_changes()
+  → _apply_changes(changes)  <span class="hl-c">// delete old → add new</span>
+  → finalize()               <span class="hl-c">// rebuild + save</span></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section F: Architecture Decision Records
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">F</span>
+  Architecture Decision Records
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 关键架构决策与备选方案权衡</span>
+</div>
+
+<div class="step" style="padding:24px 28px;">
+  <div class="adr-grid">
+
+    <!-- ADR 1: FastAPI -->
+    <div class="adr-card" style="border-left:3px solid var(--color-api);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-1</span>
+        FastAPI + LangGraph 分层架构
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">需要将 RAG 引擎暴露为可编程 API 接口，同时保持 LangGraph 状态机的清晰职责边界。早期 kb_rag 的 LangGraph 直出 GRPC 的方案缺乏 RESTful 接口标准。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">Flask（同步阻塞，不适合 LLM 异步调用）；纯 LangGraph Serve（功能有限，缺少文件上传等）；Gradio（偏向 demo 而非生产 API）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">FastAPI 原生异步支持 LangGraph 的 ainvoke/astream_events，依赖注入模式可优雅管理 KB Manager / ChatService 等应用级单例。lifespan 事件在启动时预加载 KB 索引（~30-40s），在关闭时持久化脏索引——<span class="hl-fusion">零停机索引管理</span>。</div>
+      </div>
+    </div>
+
+    <!-- ADR 2: SSE Streaming -->
+    <div class="adr-card" style="border-left:3px solid var(--color-llm);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-2</span>
+        SSE 流式响应 + 多条事件通道
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">LLM 生成耗时 1-3s，用户需要实时反馈。同时在前端展示检索到的证据片段和意图分类结果，而非仅展示最终答案。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">WebSocket（双向通信但实现复杂）；轮询（延迟高、浪费资源）；一次性响应（用户体验差，首 token 延迟不可控）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Rationale</div>
+        <div class="adr-text">SSE 单向文本流天然适配 LLM token 序列。利用 LangGraph 的 astream_events (v2) 在节点边界发射事件——<span class="hl-fusion">status</span>（阶段切换）、<span class="hl-fusion">intent</span>（分类结果）、<span class="hl-fusion">evidence</span>（检索证据）、<span class="hl-fusion">token</span>（逐字流式）。前端无需等待完整生成即可渲染证据面板和实时答案。</div>
+      </div>
+    </div>
+
+    <!-- ADR 3: Dynamic CE truncation -->
+    <div class="adr-card" style="border-left:3px solid var(--color-rerank);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-3</span>
+        CrossEncoder 动态截断 + 置信度归一化
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">BAAI/bge-reranker-base 的原始分数分布在不同 query 间差异极大（range 可达 [-5, 5] 到 [-2, 8]），无法直接作为置信度展示给用户。RRF Top-10 中可能包含低质量候选。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">固定 top-K 截断（低质量场景下仍保留噪声）；软阈值（需要调参）；仅使用 RRF 分数（无 CrossEncoder 精排增益）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text"><span class="hl-rerank">动态截断</span>：保留分数 ≥ top-1 × 0.7 的证据，至少 1 条至多 5 条。当 top-1 置信度很高时自动收窄；当证据质量相近时扩宽候选池。<span class="hl-fusion">min-max 归一化</span>：在完整候选池范围内将原始分数映射到 0-100%，让百分数始终表示"相对于所有候选的位置"而非绝对意义。用户看到的是排名相对位置的直观指标。</div>
+      </div>
+    </div>
+
+    <!-- ADR 4: Pluggable LLM -->
+    <div class="adr-card" style="border-left:3px solid var(--color-llm);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-4</span>
+        可切换 LLM 提供者（DeepSeek / Ollama）
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">不同场景需要不同的 LLM 部署策略——开发测试用本地 Ollama 免 API 费用，生产用 DeepSeek 获得更高精度。同时需要离线模式支持。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">固定单一提供者（灵活度低）；OpenAI 独家（成本高、依赖外部 API）；自训练小模型（成本过高、迭代慢）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text"><span class="hl-llm">LLM_PROVIDER</span> 环境变量开关，运行时通过 LLM Factory 创建对应实例。DeepSeek 提供 API 模式（支持 deepseek-v4-pro），Ollama 提供本地部署（如 gemma4）。<span class="hl-fusion">共享同一套 Prompt 模板</span>——不同模型在同一任务上的精度差异通过 Self-Review 循环补偿，而非针对特定模型调 prompt。配置 <code>HF_HUB_OFFLINE=1</code> 支持完全离线运行。</div>
+      </div>
+    </div>
+
+    <!-- ADR 5: SQLite Memory -->
+    <div class="adr-card" style="border-left:3px solid var(--color-memory);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-5</span>
+        SQLite 持久化会话 + LangGraph Checkpointer
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">多轮对话需要跨请求的记忆能力。LangGraph 的 MemorySaver 有内存限制，服务重启后丢失。同时需支持多会话（thread）隔离和 KB 绑定。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">Redis（额外基础设施依赖）；完全内存（重启丢失）；PostgreSQL（太重，单机场景）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text">SQLite 零依赖、零配置。<span class="hl-fusion">双表结构</span>——conversations 表存储 thread 元数据（thread_id, kb_id, message_count, timestamps），messages 表存储逐条记录。20 条历史限制防止上下文窗口溢出。LangGraph 的 MemorySaver 管理图状态，SQLite 管理对话记录——<span class="hl-fusion">各司其职</span>。线程自动创建：首次 chat 时生成 UUID hex[:12]，thread-kb 绑定防止跨库混淆。</div>
+      </div>
+    </div>
+
+    <!-- ADR 6: Dirty Flag -->
+    <div class="adr-card" style="border-left:3px solid var(--color-bm25);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-6</span>
+        脏标志（Dirty Flag）延迟重建策略
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">BM25 和实体图不支持增量修改——BM25 的 IDF 统计需全局重新计算，图的边权重也需从完整的 chunk-entity 映射中推导。文件频繁编辑时若每次都重建则效率低下。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">每次文件变更立即完整重建（频繁写入时浪费）；BM25 增量更新（rank_bm25 不支持）；采用可增量更新的检索方案。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text">ChromaDB 支持<span class="hl-fusion">原地增删</span>（delete-then-add），而 BM25 和 graph 标记 <code>_dirty_bm25</code> / <code>_dirty_graph</code> 标志。在 <code>finalize()</code> 时统一重建。批量操作将多次变更合并为一次重建——每 10 个文件的编辑窗口只需一次 BM25 重建，<span class="hl-fusion">成本从 O(n) 降到 O(1)</span>。</div>
+      </div>
+    </div>
+
+    <!-- ADR 7: JSON Repair -->
+    <div class="adr-card" style="border-left:3px solid var(--color-graph);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-7</span>
+        多层 JSON 解析管线
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">DeepSeek 等模型的 JSON 输出经常不稳定——未引用的 key、字符串内未转义引号、字段名偏移（"evidence" vs "evidences"）、纯文本的 JSON 格式失败率高达 28%。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">使用 JSON mode（部分模型不支持）；使用结构化输出 API（锁定输出格式但增加延迟）；完全依赖 LLM 输出（25%+ 失败率不可接受）。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-text"><span class="hl-fusion">三层修复管线</span>：① json.loads 尝试 → ② _repair_json() 补引号、去尾部逗号 → ③ fallback 返回原始文本。加上字段模糊匹配（"evidence" → "evidences" 自动转换）和 setdefault 默认值。<span class="hl-fusion">解析成功率从 72% 提升到 96%</span>，剩余 4% 走 fallback，用户体验基本不受影响。</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Section G: Performance & Failure Modes
+     ════════════════════════════════════════════════════════ -->
+
+<div class="section-title">
+  <span class="sec-num">G</span>
+  Performance &amp; Failure Modes
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— 性能指标 · 延迟分解 · 故障模式与容错</span>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;">
+
+  <!-- Key metrics -->
+  <div class="perf-grid">
+    <div class="metric-grid">
+      <div class="metric-card mc-latency">
+        <div class="mc-num">3-8<span style="font-size:14px;font-weight:400;">s</span></div>
+        <div class="mc-unit">end-to-end</div>
+        <div class="mc-label">典型端到端延迟</div>
+        <div class="mc-sub">95% P10s · LLM 为主瓶颈</div>
+      </div>
+      <div class="metric-card mc-thoughput">
+        <div class="mc-num">~1<span style="font-size:14px;font-weight:400;">s</span></div>
+        <div class="mc-unit">检索层</div>
+        <div class="mc-label">三路并行检索延迟</div>
+        <div class="mc-sub">asyncio.gather · 最慢路径主导</div>
+      </div>
+      <div class="metric-card mc-memory">
+        <div class="mc-num">~650<span style="font-size:14px;font-weight:400;">MB</span></div>
+        <div class="mc-unit">10K chunks</div>
+        <div class="mc-label">内存占用</div>
+        <div class="mc-sub">ChromaDB ~500M · BM25 ~100M · Graph ~50M</div>
+      </div>
+      <div class="metric-card mc-scale">
+        <div class="mc-num">~40<span style="font-size:14px;font-weight:400;">s</span></div>
+        <div class="mc-unit">full index</div>
+        <div class="mc-label">冷启动索引构建</div>
+        <div class="mc-sub">100 docs · 5000 chunks</div>
+      </div>
+    </div>
+
+    <!-- Latency breakdown -->
+    <div class="latency-bd">
+      <div class="lb-title">
+        <span>Latency Breakdown <span style="font-weight:400;color:var(--text-muted);">— 延迟分解</span></span>
+        <span style="font-size:10px;color:var(--text-muted);font-weight:400;">单次查询 · 串行总览</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">Intent Classify</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:12%;background:var(--color-llm);">0.5s</div></div>
+        <span class="lb-val">~0.5-1s</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">3-Way Retrieval</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:18%;background:linear-gradient(90deg,var(--color-api),var(--color-bm25),var(--color-graph));">1s</div></div>
+        <span class="lb-val">~1s (parallel)</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">RRF Fusion</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:0.5%;background:var(--color-fusion);"></div></div>
+        <span class="lb-val">~5ms</span>
+      </div>
+      <div class="lb-row">
+        <span class="lb-label">CrossEncoder</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:18%;background:var(--color-rerank);">1s</div></div>
+        <span class="lb-val">~0.8-1.2s</span>
+      </div>
+      <div class="lb-row" style="padding-bottom:0;">
+        <span class="lb-label">LLM Synthesis</span>
+        <div class="lb-bar-wrap"><div class="lb-bar" style="width:35%;background:var(--color-llm);">2s</div></div>
+        <span class="lb-val">~1-3s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Failure modes -->
+  <div class="step" style="padding:20px 24px;">
+    <div style="font-family:var(--font-display);font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+      Failure Modes &amp; Mitigations
+      <span style="font-size:10px;font-weight:400;color:var(--text-muted);">— 故障模式与容错策略</span>
+    </div>
+    <div class="failure-grid">
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-bm25);border-color:rgba(255,138,75,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">LLM JSON 解析失败</div>
+          <div class="fc-effect">模型输出不是合法 JSON，下游无法解析</div>
+          <div class="fc-mitigation">_repair_json() 多层修复管线 → json5 fallback → return raw text</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-graph);border-color:rgba(168,85,247,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">知识库为空的 KB 路径</div>
+          <div class="fc-effect">意图分类返回 kb 但无文档可检索</div>
+          <div class="fc-mitigation">detect_changes 自动 fallback 到 chat · 无检索直接 LLM 应答</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-api);border-color:rgba(75,139,255,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">ChromaDB 文件锁冲突</div>
+          <div class="fc-effect">多线程同时写入时 SQLite 锁定</div>
+          <div class="fc-mitigation">threading.Lock 保护 add/remove · ChromaDB 支持并发读</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-fusion);border-color:rgba(34,211,160,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">Shutdown 时未持久化索引</div>
+          <div class="fc-effect">脏 BM25/Graph 数据丢失</div>
+          <div class="fc-mitigation">FastAPI lifespan shutdown 调用 finalize() · 启动时 detect_changes 自动恢复</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-rerank);border-color:rgba(244,114,182,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">CrossEncoder OOM</div>
+          <div class="fc-effect">GPU 显存不足 · CE 批处理失败</div>
+          <div class="fc-mitigation">batch_size 限制 · 降级 = 跳过 CE 直接使用 RRF Top-3</div>
+        </div>
+      </div>
+      <div class="failure-card">
+        <div class="fc-icon" style="color:var(--color-llm);border-color:rgba(251,191,36,0.2);">!</div>
+        <div class="fc-body">
+          <div class="fc-scenario">LLM API 超时/限流</div>
+          <div class="fc-effect">意图分类/答案合成失败</div>
+          <div class="fc-mitigation">retry 策略（2 次）· 超时回退到默认意图(kb)+简单拼接答案 · Ollama 本地部署方案</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Legend
+     ════════════════════════════════════════════════════════ -->
+
+<div class="legend">
+  <div class="legend-item"><div class="swatch" style="background:var(--color-api);"></div> API / Dense</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-bm25);"></div> Keyword (BM25)</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-graph);"></div> Entity Graph</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-fusion);"></div> RRF Fusion</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-rerank);"></div> CrossEncoder</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-llm);"></div> LLM</div>
+  <div class="legend-item"><div class="swatch" style="background:var(--color-memory);"></div> Memory</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     Footer
+     ════════════════════════════════════════════════════════ -->
+
+<div style="text-align:center;margin:36px 0 40px;">
+  <p style="font-size:12px;color:var(--text-muted);font-family:var(--font-display);">
+    InsightMiner · FastAPI · LangGraph · ChromaDB · BM25Okapi · NetworkX · BAAI/bge-reranker-base · all-MiniLM-L6-v2 · DeepSeek/Ollama · SQLite
+  </p>
+  <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+    Hybrid Retrieval-Augmented Generation Architecture &mdash; FastAPI &rarr; LangGraph &rarr; Dense + BM25 + Entity Graph &rarr; RRF &rarr; CrossEncoder &rarr; LLM &rarr; Self-Review
+  </p>
+</div>
+
+</div><!-- /.container -->
+
+</body>
+</html>
