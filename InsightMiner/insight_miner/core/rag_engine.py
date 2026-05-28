@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
+
+logger = logging.getLogger(__name__)
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -192,6 +195,7 @@ def make_classify_intent_node(kb_index: KnowledgeBaseIndex, llm=None):
             history=history or "无",
             question=state["question"],
         )
+        logger.info("classifying intent via LLM… question=%.50s", state["question"])
         response = await llm.ainvoke(prompt)
         raw = response.content if hasattr(response, "content") else str(response)
         parsed = parse_json_response(raw, state["question"])
@@ -226,6 +230,7 @@ def make_classify_intent_node(kb_index: KnowledgeBaseIndex, llm=None):
         except (ValueError, json.JSONDecodeError):
             pass
 
+        logger.info("classify_intent question=%.50s intent=%s entities=%s", state["question"], intent, entities)
         return {
             "intent": intent,
             "rewritten_query": rewritten,
@@ -248,12 +253,35 @@ def make_retrieve_kb_node(kb_index: KnowledgeBaseIndex):
         top_candidates = fused[:10]
 
         if not top_candidates or not kb_index.chunk_texts:
+            logger.info("retrieve_kb no_results query=%.50s", query)
             return {"retrieved_docs": "", "kb_confidence": -10.0}
 
         doc_texts = [kb_index.chunk_texts[idx] for idx, _ in top_candidates]
         doc_scores = [score for _, score in top_candidates]
 
-        reranked = kb_index.rerank(query, doc_texts, top_k=3)
+        reranked = kb_index.rerank(query, doc_texts, top_k=len(doc_texts))
+        max_score = reranked[0][1] if reranked else -10.0
+
+        # 记录完整候选池的分数范围，用于置信度归一化
+        pool_scores = [s for _, s in reranked]
+        pool_min = min(pool_scores) if pool_scores else -5.0
+        pool_max = max(pool_scores) if pool_scores else 5.0
+        pool_range = pool_max - pool_min
+
+        # 动态截断：保留分数 ≥ top-1 × 0.7 的证据，至少 1 条，至多 5 条
+        if reranked:
+            threshold = max_score * 0.7
+            selected = [reranked[0]]
+            for t, s in reranked[1:]:
+                if s >= threshold and len(selected) < 5:
+                    selected.append((t, s))
+            reranked = selected
+
+        logger.info(
+            "retrieve_kb query=%.50s dense=%d bm25=%d graph=%d top_score=%.3f pool_range=[%.2f, %.2f] evidences=%d",
+            query, len(dense_results), len(bm25_results), len(graph_results),
+            max_score, pool_min, pool_max, len(reranked),
+        )
 
         lines: list[str] = []
         final_evidences: list[dict] = []
@@ -264,14 +292,16 @@ def make_retrieve_kb_node(kb_index: KnowledgeBaseIndex):
                 if kb_index.chunk_texts[idx] == text:
                     src_doc = kb_index.chunk_metas[idx].get("filename", "")
                     break
+            # min-max 归一化到完整候选池，让百分数体现"相对于所有候选的位置"
+            confidence_pct = round(((score - pool_min) / pool_range) * 100, 1) if pool_range > 0 else 100.0
             final_evidences.append({
                 "evidence": text[:500],
                 "score": score,
+                "confidence_pct": confidence_pct,
                 "source_document": src_doc,
             })
 
         formatted = "\n\n".join(lines)
-        max_score = reranked[0][1] if reranked else -10.0
 
         return {
             "retrieved_docs": formatted,
@@ -289,6 +319,7 @@ def make_synthesize_answer_node(llm=None):
     async def synthesize_answer(state: AgentState) -> dict:
         context_block = _build_context_block(state)
         history = format_history(state.get("messages", []))
+        logger.info("synthesize_answer intent=%s review_count=%d", state.get("intent"), state.get("review_count", 0))
 
         if state.get("streaming", False):
             # ── 流式模式：纯文本 + astream ──
@@ -363,6 +394,8 @@ def make_self_review_node(llm=None):
         except (ValueError, json.JSONDecodeError):
             score = 3
             issues = ""
+
+        logger.info("self_review score=%d/5 issues=%.100s", score, issues or "none")
 
         if score >= 3:
             return {"review_feedback": "", "review_count": state.get("review_count", 0)}

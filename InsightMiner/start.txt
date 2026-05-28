@@ -1,0 +1,25 @@
+这个项目分两部分启动：
+
+1. 后端 (FastAPI)
+
+在 InsightMiner/ 目录下运行：
+
+
+cd InsightMiner
+uvicorn insight_miner.main:app --reload --port 8000
+默认会在 http://localhost:8000 启动，API 文档在 http://localhost:8000/docs。
+
+2. 前端 (Vue.js)
+
+新开一个终端，在 InsightMiner/client/ 目录下运行：
+
+
+cd InsightMiner/client
+npm install    # 首次需要，已安装过可跳过
+npm run serve
+默认在 http://localhost:8080 启动。
+
+前提条件
+
+根据 .env 文件检查环境变量（DeepSeek / Ollama 等 LLM 配置）
+根据 config.py，嵌入模型用的是 all-MiniLM-L6-v2，如果需要在线下载请注释 main.py 中的 HF_HUB_OFFLINE=1，否则确保模型已缓存到本地

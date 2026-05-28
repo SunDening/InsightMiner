@@ -2,24 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 
 # 强制离线：必须在任何模型导入之前设置
 os.environ["HF_HUB_OFFLINE"] = "1"
 
+from dotenv import load_dotenv
+
+load_dotenv()  # 必须在导入本地模块之前加载 .env
+
 from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from insight_miner.api import chat as chat_api
 from insight_miner.api import knowledge_base as kb_api
+from insight_miner.config import setup_logging
 from insight_miner.services.chat_service import ChatService
 from insight_miner.services.kb_manager import KnowledgeBaseManager
 from insight_miner.services.memory_service import MemoryService
 
-load_dotenv()
+setup_logging()
+
+logger = logging.getLogger(__name__)
 
 
 # ── Services (application-scoped singletons) ──
@@ -45,9 +53,17 @@ def _inject_deps(app: FastAPI):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting InsightMiner server")
     _inject_deps(app)
+
+    # 预加载默认 KB 索引（模型加载较慢，在后台线程执行）
+    logger.info("Pre-loading default knowledge base index…")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, kb_manager.get_index, "default")
+    logger.info("Default knowledge base index loaded")
+
     yield
-    # Shutdown: persist dirty indices
+    logger.info("Shutting down InsightMiner server, persisting indices")
     kb_manager.shutdown()
 
 

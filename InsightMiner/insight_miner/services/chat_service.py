@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator
+
+logger = logging.getLogger(__name__)
 
 from langchain_core.messages import HumanMessage
 
@@ -17,7 +21,9 @@ from insight_miner.services.memory_service import MemoryService
 
 def _score_to_pct(score: float) -> float:
     normalized = (score + 5.0) / 10.0
-    return round(max(0.0, min(100.0, normalized * 100.0)), 1)
+    clipped = max(0.0, min(1.0, normalized))
+    # sqrt 拉伸让中间段的百分数更有区分度
+    return round(math.sqrt(clipped) * 100.0, 1)
 
 
 def _sse(event: str, data: dict) -> str:
@@ -70,6 +76,7 @@ class ChatService:
     ) -> ChatResponse:
         thread_id = self._ensure_thread(thread_id, kb_id)
         self._memory.save_message(thread_id, "user", question)
+        logger.info("chat thread=%s kb=%s question=%.50s", thread_id, kb_id, question)
 
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         graph = self._get_or_create_graph(kb_id)
@@ -112,10 +119,12 @@ class ChatService:
                 if isinstance(content, list):
                     content = " ".join(str(c) for c in content)
                 source = ev.get("source_document", ev.get("source", ""))
+                # 优先使用 retrieve_kb 节点预计算的 min-max 置信度
+                confidence_pct = float(ev.get("confidence_pct", _score_to_pct(score)))
                 evidences.append(EvidenceItem(
                     content=str(content)[:1000],
                     score=score,
-                    confidence_pct=_score_to_pct(score),
+                    confidence_pct=confidence_pct,
                     source_document=str(source),
                     chunk_index=ev.get("chunk_index", 0),
                 ))
@@ -158,6 +167,7 @@ class ChatService:
     ) -> AsyncGenerator[str, None]:
         thread_id = self._ensure_thread(thread_id, kb_id)
         self._memory.save_message(thread_id, "user", question)
+        logger.info("stream_chat thread=%s kb=%s question=%.50s", thread_id, kb_id, question)
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         graph = self._get_or_create_graph(kb_id)
 
@@ -224,7 +234,7 @@ class ChatService:
                                 formatted.append({
                                     "content": str(content)[:1000],
                                     "score": score,
-                                    "confidence_pct": _score_to_pct(score),
+                                    "confidence_pct": float(ev.get("confidence_pct", _score_to_pct(score))),
                                     "source_document": str(ev.get("source_document", "")),
                                 })
                             yield _sse("evidence", {"evidences": formatted})
@@ -240,6 +250,7 @@ class ChatService:
                             yield _sse("token", {"token": token})
 
         except Exception as e:
+            logger.error("stream_chat error thread=%s: %s", thread_id, e)
             yield _sse("error", {"message": str(e) or "生成回答时出错"})
             error_occurred = True
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from insight_miner.config import (
 )
 from insight_miner.core.document_processor import KnowledgeBaseIndex
 
+logger = logging.getLogger(__name__)
+
 
 class KnowledgeBaseManager:
     """Manages multiple knowledge bases and their document lifecycles.
@@ -29,6 +32,7 @@ class KnowledgeBaseManager:
 
     def _get_index(self, kb_id: str) -> KnowledgeBaseIndex:
         if kb_id not in self._indices:
+            logger.info("Initializing index for kb=%s", kb_id)
             idx = KnowledgeBaseIndex(kb_id)
             idx.load_models()
             idx.initialize()
@@ -60,9 +64,11 @@ class KnowledgeBaseManager:
     def create_knowledge_base(self, kb_id: str) -> bool:
         path = get_kb_dir(kb_id)
         if path.exists():
+            logger.warning("create_knowledge_base already_exists kb=%s", kb_id)
             return False
         path.mkdir(parents=True, exist_ok=True)
         (path / "documents").mkdir(exist_ok=True)
+        logger.info("create_knowledge_base kb=%s", kb_id)
         return True
 
     def delete_knowledge_base(self, kb_id: str):
@@ -71,12 +77,14 @@ class KnowledgeBaseManager:
         path = get_kb_dir(kb_id)
         if path.exists():
             shutil.rmtree(str(path))
+            logger.info("delete_knowledge_base kb=%s", kb_id)
 
     # ── Document management ──
 
     async def upload_document(self, kb_id: str, filename: str, content: bytes) -> dict:
         ext = Path(filename).suffix.lower()
         if ext not in SUPPORTED_EXTS:
+            logger.warning("upload_document unsupported_ext kb=%s file=%s ext=%s", kb_id, filename, ext)
             return {"success": False, "error": f"Unsupported file type: {ext}"}
 
         docs_dir = get_docs_dir(kb_id)
@@ -96,6 +104,7 @@ class KnowledgeBaseManager:
         try:
             idx = self._get_index(kb_id)
         except Exception as e:
+            logger.error("upload_document index_init_fail kb=%s file=%s error=%s", kb_id, filename, e)
             return {"success": False, "error": f"Index init failed: {e}"}
 
         fpath.write_bytes(content)
@@ -104,6 +113,10 @@ class KnowledgeBaseManager:
             success = idx.add_document(fpath.name)
             if success:
                 idx.finalize()
+            if success:
+                logger.info("upload_document ok kb=%s file=%s size=%d", kb_id, fpath.name, len(content))
+            else:
+                logger.warning("upload_document add_fail kb=%s file=%s", kb_id, fpath.name)
             return {
                 "success": success,
                 "filename": fpath.name,
@@ -113,22 +126,25 @@ class KnowledgeBaseManager:
         except Exception as e:
             if fpath.exists():
                 fpath.unlink()
+            logger.error("upload_document exception kb=%s file=%s error=%s", kb_id, fpath.name, e)
             return {"success": False, "error": str(e)}
 
     async def delete_document(self, kb_id: str, filename: str) -> bool:
         docs_dir = get_docs_dir(kb_id)
         fpath = docs_dir / filename
         if not fpath.exists():
+            logger.warning("delete_document not_found kb=%s file=%s", kb_id, filename)
             return False
 
         try:
             idx = self._get_index(kb_id)
             idx.remove_document(filename)
             idx.finalize()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("delete_document index_error kb=%s file=%s error=%s", kb_id, filename, e)
 
         fpath.unlink(missing_ok=True)
+        logger.info("delete_document ok kb=%s file=%s", kb_id, filename)
         return True
 
     def list_documents(self, kb_id: str) -> list[dict]:
@@ -167,5 +183,6 @@ class KnowledgeBaseManager:
 
     def shutdown(self):
         """Persist all dirty indices."""
+        logger.info("Shutting down %d indices", len(self._indices))
         for idx in self._indices.values():
             idx.finalize()

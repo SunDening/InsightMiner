@@ -12,7 +12,8 @@ def create_llm(provider: str | None = None, temperature: float = 0.1):
     provider = provider or LLM_PROVIDER
 
     if provider == "ollama":
-        return ChatOllama(model=OLLAMA_MODEL, temperature=temperature)
+        timeout = int(os.getenv("LLM_TIMEOUT", "120"))
+        return ChatOllama(model=OLLAMA_MODEL, temperature=temperature, timeout=timeout)
 
     return ChatDeepSeek(
         model=os.getenv("LLM_MODEL_ID", "deepseek-v4-pro"),

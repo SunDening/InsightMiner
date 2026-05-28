@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import pickle
 import re
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import (
@@ -265,11 +268,13 @@ class KnowledgeBaseIndex:
 
     def load_models(self):
         if self.embeddings_model is None:
+            logger.info("Loading embedding model: all-MiniLM-L6-v2")
             self.embeddings_model = HuggingFaceEmbeddings(
                 model_name="all-MiniLM-L6-v2",
                 model_kwargs={"local_files_only": True},
             )
         if self.reranker_model is None:
+            logger.info("Loading reranker model: BAAI/bge-reranker-base")
             self.reranker_model = CrossEncoder(
                 "BAAI/bge-reranker-base",
                 local_files_only=True,
@@ -336,10 +341,14 @@ class KnowledgeBaseIndex:
             chunk_overlap=CHUNK_OVERLAP,
         )
 
-        for fpath in self._list_kb_files():
+        files = self._list_kb_files()
+        logger.info("Rebuilding index for kb=%s, files=%d", self.kb_id, len(files))
+
+        for fpath in files:
             try:
                 text = load_document(fpath)
-            except Exception:
+            except Exception as e:
+                logger.warning("Failed to load file %s: %s", fpath.name, e)
                 continue
             chunks = splitter.split_text(text)
             doc_id = self._doc_id(fpath.name)
@@ -377,6 +386,7 @@ class KnowledgeBaseIndex:
         self._save_manifest()
         self._dirty_bm25 = False
         self._dirty_graph = False
+        logger.info("Rebuild complete for kb=%s, chunks=%d", self.kb_id, len(all_chunk_texts))
 
     # ── BM25 ──
 
@@ -491,10 +501,12 @@ class KnowledgeBaseIndex:
         """Add a single document's chunks to the index. Returns True if successful."""
         fpath = get_docs_dir(self.kb_id) / fname
         if not fpath.exists():
+            logger.warning("add_document not_found kb=%s file=%s", self.kb_id, fname)
             return False
         try:
             text = load_document(fpath)
-        except Exception:
+        except Exception as e:
+            logger.warning("add_document load_fail kb=%s file=%s error=%s", self.kb_id, fname, e)
             return False
 
         splitter = RecursiveCharacterTextSplitter(
@@ -530,6 +542,7 @@ class KnowledgeBaseIndex:
 
     def remove_document(self, fname: str):
         """Remove all chunks belonging to a document."""
+        logger.info("remove_document kb=%s file=%s", self.kb_id, fname)
         with self._lock:
             if self.chunk_collection is not None:
                 existing = self.chunk_collection.get(where={"filename": fname})
@@ -568,12 +581,14 @@ class KnowledgeBaseIndex:
         """Load existing indices or rebuild from scratch."""
         self.ensure_dirs()
         if self._chroma_exists():
+            logger.info("Loading existing index for kb=%s", self.kb_id)
             self._load_existing_chroma()
             self._load_bm25()
             self._load_graph()
             changes = self.detect_changes()
             self._apply_changes(changes)
         else:
+            logger.info("No existing index found, full rebuild for kb=%s", self.kb_id)
             self._full_rebuild()
 
     def _apply_changes(self, changes: dict):
@@ -631,4 +646,6 @@ class KnowledgeBaseIndex:
         scores = self.reranker_model.predict(pairs)
         indexed = list(zip(docs, scores.tolist()))
         indexed.sort(key=lambda x: -x[1])
+        top_scores = [f"{s:.3f}" for _, s in indexed[:top_k]]
+        logger.debug("rerank top_k=%d scores=[%s]", top_k, ", ".join(top_scores))
         return indexed[:top_k]
