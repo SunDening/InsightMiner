@@ -1157,3 +1157,19 @@ a:hover {
 .upload-zone.dragover .sub-hint {
   color: var(--color-slate);
 }
+
+.upload-zone.has-error {
+  border-color: var(--color-error, #e53e3e);
+  color: var(--color-error, #e53e3e);
+  background: rgba(229, 62, 62, 0.06);
+}
+
+.upload-error {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--fs-body-sm);
+  color: var(--color-error, #e53e3e);
+  background: rgba(229, 62, 62, 0.08);
+  border-radius: var(--radius-md);
+  text-align: center;
+}

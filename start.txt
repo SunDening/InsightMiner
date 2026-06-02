@@ -1,25 +1,87 @@
-这个项目分两部分启动：
+InsightMiner 启动说明
+======================
+
+注意：本分支 (insight-miner-only) 文件在项目根目录，不在 InsightMiner/ 子目录中。
+
+
+0. 前提条件 — 启动中间件 (Docker)
+─────────────────────────────────
+
+cd D:\Software\data\Docker\data\my_composes\InsightMiner
+docker compose up -d
+
+这将启动：
+  - Redis      → localhost:6379   (缓存 + 限流)
+  - PostgreSQL → localhost:5432   (元数据存储, 账号/密码: insight)
+  - RabbitMQ   → localhost:5672   (消息队列)
+                 管理后台: http://localhost:15672  (guest/guest)
+
+验证：docker compose ps  # 全部 health 状态
+
 
 1. 后端 (FastAPI)
+─────────────────
 
-在 InsightMiner/ 目录下运行：
-
-
-cd InsightMiner
+cd d:\Coding\agent\test
+$env:USE_PGVECTOR="true"
+d:\Coding\agent\test\.venv\Scripts\Activate.ps1
 uvicorn insight_miner.main:app --reload --port 8000
-默认会在 http://localhost:8000 启动，API 文档在 http://localhost:8000/docs。
+
+API 文档：http://localhost:8000/docs
+健康检查：http://localhost:8000/api/system/health
+指标：http://localhost:8000/metrics
+- 降级控制:      GET/POST http://localhost:8000/api/system/degradation
+
 
 2. 前端 (Vue.js)
+─────────────────
 
-新开一个终端，在 InsightMiner/client/ 目录下运行：
-
-
-cd InsightMiner/client
+cd d:\Coding\agent\test\client
 npm install    # 首次需要，已安装过可跳过
 npm run serve
+
 默认在 http://localhost:8080 启动。
 
-前提条件
 
-根据 .env 文件检查环境变量（DeepSeek / Ollama 等 LLM 配置）
-根据 config.py，嵌入模型用的是 all-MiniLM-L6-v2，如果需要在线下载请注释 main.py 中的 HF_HUB_OFFLINE=1，否则确保模型已缓存到本地
+3. 异步入库 Worker (可选)
+─────────────────────────
+
+新开一个终端，在项目根目录运行：
+
+cd d:\Coding\agent\test
+.venv\Scripts\python.exe -m insight_miner.core.ingestion.worker
+
+独立进程，消费 RabbitMQ 消息，后台处理文档入库。
+不启动 Worker 时上传文档会自动降级为同步模式。
+
+
+4. 环境变量
+───────────
+
+编辑 .env 文件，关键配置：
+
+  LLM_PROVIDER=ollama        # deepseek | ollama
+  LLM_MODEL_ID=deepseek-v4-pro
+  OLLAMA_MODEL=gemma4:e4b
+  REDIS_URL=redis://localhost:6379/0
+  RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+  PG_DATABASE_URL=postgresql://insight:insight@localhost:5432/insight
+
+
+5. 架构一览
+───────────
+
+打开 http://localhost:8000/show/ 查看架构展示页。
+
+
+6. 常用命令速查
+───────────────
+
+  # 查看日志
+  docker compose -f D:\Software\data\Docker\data\my_composes\InsightMiner\docker-compose.yml logs -f
+
+  # 重启所有中间件
+  docker compose -f D:\Software\data\Docker\data\my_composes\InsightMiner\docker-compose.yml restart
+
+  # 只停 RabbitMQ
+  docker compose -f D:\Software\data\Docker\data\my_composes\InsightMiner\docker-compose.yml stop rabbitmq

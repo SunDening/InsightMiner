@@ -20,10 +20,17 @@ export function listDocs(kbId) {
   return http.get(`/knowledge-bases/${kbId}/documents`).then(r => r.data)
 }
 
-export function uploadDoc(kbId, file) {
+export async function uploadDoc(kbId, file) {
   const fd = new FormData()
   fd.append('file', file)
-  return http.post(`/knowledge-bases/${kbId}/documents`, fd).then(r => r.data)
+  try {
+    const r = await http.post(`/knowledge-bases/${kbId}/documents`, fd)
+    return r.data
+  } catch (err) {
+    // Extract server-side detail from 400/4xx responses
+    const detail = err?.response?.data?.detail || err.message || 'Upload failed'
+    throw new Error(detail)
+  }
 }
 
 export function deleteDoc(kbId, filename) {

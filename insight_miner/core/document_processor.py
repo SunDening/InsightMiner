@@ -28,6 +28,7 @@ from insight_miner.config import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     SUPPORTED_EXTS,
+    USE_PGVECTOR,
     get_bm25_path,
     get_chroma_dir,
     get_docs_dir,
@@ -35,6 +36,7 @@ from insight_miner.config import (
     get_kb_dir,
     get_manifest_path,
 )
+from insight_miner.core.store.vector import PGVectorStore
 
 
 # ── Document loading ──
@@ -250,6 +252,9 @@ class KnowledgeBaseIndex:
         # ChromaDB collections
         self.chunk_collection: Chroma | None = None
 
+        # PGvector (optional)
+        self._pg_vector_store = PGVectorStore() if USE_PGVECTOR else None
+
         # BM25
         self.bm25: BM25Okapi | None = None
         self.chunk_texts: list[str] = []
@@ -284,7 +289,8 @@ class KnowledgeBaseIndex:
 
     def ensure_dirs(self):
         get_kb_dir(self.kb_id).mkdir(parents=True, exist_ok=True)
-        get_chroma_dir(self.kb_id).mkdir(parents=True, exist_ok=True)
+        if not self._pg_vector_store:
+            get_chroma_dir(self.kb_id).mkdir(parents=True, exist_ok=True)
         get_docs_dir(self.kb_id).mkdir(parents=True, exist_ok=True)
 
     def _doc_id(self, fname: str) -> str:
@@ -366,20 +372,33 @@ class KnowledgeBaseIndex:
         self.chunk_ids = all_chunk_ids
         self.chunk_metas = all_chunk_metas
 
-        if all_chunk_texts:
-            self.chunk_collection = Chroma.from_texts(
-                texts=all_chunk_texts,
-                embedding=self.embeddings_model,
-                ids=all_chunk_ids,
-                metadatas=all_chunk_metas,
-                persist_directory=str(get_chroma_dir(self.kb_id)),
-            )
-        else:
-            self.chunk_collection = Chroma(
-                collection_name="chunks",
-                embedding_function=self.embeddings_model,
-                persist_directory=str(get_chroma_dir(self.kb_id)),
-            )
+        # ChromaDB (only when PGvector is NOT enabled)
+        if not self._pg_vector_store:
+            if all_chunk_texts:
+                self.chunk_collection = Chroma.from_texts(
+                    texts=all_chunk_texts,
+                    embedding=self.embeddings_model,
+                    ids=all_chunk_ids,
+                    metadatas=all_chunk_metas,
+                    persist_directory=str(get_chroma_dir(self.kb_id)),
+                )
+            else:
+                self.chunk_collection = Chroma(
+                    collection_name="chunks",
+                    embedding_function=self.embeddings_model,
+                    persist_directory=str(get_chroma_dir(self.kb_id)),
+                )
+
+        # PGvector: write embeddings on full rebuild
+        if self._pg_vector_store is not None and self.embeddings_model is not None and all_chunk_texts:
+            import asyncio
+            try:
+                embeddings = self.embeddings_model.embed_documents(all_chunk_texts)
+                asyncio.run(self._pg_vector_store.add_texts(
+                    self.kb_id, all_chunk_ids, all_chunk_texts, embeddings, all_chunk_metas,
+                ))
+            except Exception as e:
+                logger.warning("full_rebuild pgvector error: %s", e)
 
         self._build_bm25()
         self._build_graph()
@@ -497,7 +516,7 @@ class KnowledgeBaseIndex:
 
     # ── Document CRUD ──
 
-    def add_document(self, fname: str) -> bool:
+    async def add_document(self, fname: str) -> bool:
         """Add a single document's chunks to the index. Returns True if successful."""
         fpath = get_docs_dir(self.kb_id) / fname
         if not fpath.exists():
@@ -530,8 +549,15 @@ class KnowledgeBaseIndex:
             })
 
         with self._lock:
-            if self.chunk_collection is not None and texts:
+            if not self._pg_vector_store and self.chunk_collection is not None and texts:
                 self.chunk_collection.add_texts(texts=texts, ids=ids, metadatas=metas)
+            # PGvector
+            if self._pg_vector_store is not None and self.embeddings_model is not None and texts:
+                try:
+                    embeddings = self.embeddings_model.embed_documents(texts)
+                    await self._pg_vector_store.add_texts(self.kb_id, ids, texts, embeddings, metas)
+                except Exception as e:
+                    logger.warning("add_document pgvector error: %s", e)
             self.chunk_texts.extend(texts)
             self.chunk_ids.extend(ids)
             self.chunk_metas.extend(metas)
@@ -540,14 +566,21 @@ class KnowledgeBaseIndex:
 
         return True
 
-    def remove_document(self, fname: str):
+    async def remove_document(self, fname: str):
         """Remove all chunks belonging to a document."""
         logger.info("remove_document kb=%s file=%s", self.kb_id, fname)
         with self._lock:
-            if self.chunk_collection is not None:
+            # ChromaDB (only when PGvector is NOT enabled)
+            if not self._pg_vector_store and self.chunk_collection is not None:
                 existing = self.chunk_collection.get(where={"filename": fname})
                 if existing and existing.get("ids"):
                     self.chunk_collection.delete(ids=existing["ids"])
+            # PGvector
+            if self._pg_vector_store is not None:
+                try:
+                    await self._pg_vector_store.delete_by_filename(self.kb_id, fname)
+                except Exception as e:
+                    logger.warning("remove_document pgvector error: %s", e)
 
             keep_texts: list[str] = []
             keep_ids: list[str] = []
@@ -577,31 +610,39 @@ class KnowledgeBaseIndex:
                 self._dirty_graph = False
         self._save_manifest()
 
-    def initialize(self):
+    async def initialize(self):
         """Load existing indices or rebuild from scratch."""
         self.ensure_dirs()
+
+        # PGvector-only path
+        if self._pg_vector_store is not None:
+            logger.info("PGvector mode, skipping ChromaDB for kb=%s", self.kb_id)
+            self._load_bm25()
+            self._load_graph()
+            return
+
         if self._chroma_exists():
             logger.info("Loading existing index for kb=%s", self.kb_id)
             self._load_existing_chroma()
             self._load_bm25()
             self._load_graph()
             changes = self.detect_changes()
-            self._apply_changes(changes)
+            await self._apply_changes(changes)
         else:
             logger.info("No existing index found, full rebuild for kb=%s", self.kb_id)
             self._full_rebuild()
 
-    def _apply_changes(self, changes: dict):
+    async def _apply_changes(self, changes: dict):
         dirty = False
         for fname in changes.get("deleted", []):
-            self.remove_document(fname)
+            await self.remove_document(fname)
             dirty = True
         for fname in changes.get("modified", []):
-            self.remove_document(fname)
-            self.add_document(fname)
+            await self.remove_document(fname)
+            await self.add_document(fname)
             dirty = True
         for fname in changes.get("new", []):
-            self.add_document(fname)
+            await self.add_document(fname)
             dirty = True
         if dirty:
             self.finalize()
@@ -609,7 +650,23 @@ class KnowledgeBaseIndex:
     # ── Retrieval helpers ──
 
     def dense_search(self, query: str, k: int = 20) -> list[tuple[int, float]]:
-        """Semantic search via ChromaDB. Returns [(chunk_index, score)]."""
+        """Semantic search via ChromaDB or PGvector. Returns [(chunk_index, score)]."""
+        # PGvector path
+        if self._pg_vector_store is not None and self.embeddings_model is not None:
+            import asyncio
+            query_emb = self.embeddings_model.embed_query(query)
+            results = asyncio.run(self._pg_vector_store.similarity_search(self.kb_id, query_emb, k=k))
+            indexed: list[tuple[int, float]] = []
+            for cid, score in results:
+                try:
+                    idx = self.chunk_ids.index(cid)
+                except ValueError:
+                    continue
+                indexed.append((idx, score))
+            indexed.sort(key=lambda x: -x[1])
+            return indexed
+
+        # ChromaDB path (fallback)
         if self.chunk_collection is None:
             return []
         results = self.chunk_collection.similarity_search_with_score(query, k=k)

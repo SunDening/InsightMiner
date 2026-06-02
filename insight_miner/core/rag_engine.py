@@ -15,10 +15,44 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from insight_miner.config import MAX_REVIEW_RETRY, RERANK_LOW_THRESHOLD
+from insight_miner.config import (
+    MAX_REVIEW_RETRY,
+    RERANK_LOW_THRESHOLD,
+    INTENT_CONFIG_PATH,
+)
 from insight_miner.core.document_processor import KnowledgeBaseIndex
+from insight_miner.core.intent import IntentTree, LLMIntentClassifier, IntentResolver
 from insight_miner.core.llm_factory import create_llm
+from insight_miner.core.retrieval import MultiChannelEngine, SearchContext
 from insight_miner.utils.helpers import format_history, parse_json_response
+
+# ── Module-level intent tree (loaded once, config-driven) ──
+
+_intent_tree: IntentTree | None = None
+_intent_classifier: LLMIntentClassifier | None = None
+_intent_resolver: IntentResolver | None = None
+
+
+def _get_intent_engine(llm=None):
+    global _intent_tree, _intent_classifier, _intent_resolver
+    if _intent_tree is None:
+        path = INTENT_CONFIG_PATH
+        if path.exists():
+            _intent_tree = IntentTree.from_yaml(path)
+        else:
+            # Fallback: build a minimal tree from the old flat intents
+            _intent_tree = IntentTree.from_dict({
+                "intent_tree": {
+                    "chat": {"kind": "chat", "description": "日常问候闲聊"},
+                    "kb": {"kind": "kb", "description": "基于知识库回答问题"},
+                    "clarify": {"kind": "clarify", "description": "追问澄清"},
+                }
+            })
+    if _intent_classifier is None:
+        _intent_classifier = LLMIntentClassifier(_intent_tree, llm)
+    if _intent_resolver is None:
+        _intent_resolver = IntentResolver(_intent_tree)
+    return _intent_tree, _intent_classifier, _intent_resolver
 
 
 # ── State ──
@@ -27,11 +61,10 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     question: str
     rewritten_query: str
-    intent: str  # chat | kb | web | clarify
+    intent: str  # chat | kb | clarify
     current_time: str
     retrieved_docs: str
     kb_confidence: float
-    web_results: str
     query_entities: list[str]
     final_answer: str
     review_count: int
@@ -40,32 +73,6 @@ class AgentState(TypedDict):
 
 
 # ── Prompts ──
-
-INTENT_CLASSIFY_PROMPT = """你是一个智能问答系统的意图分类引擎。请根据用户问题、对话历史和知识库描述，确定用户意图。
-
-意图说明：
-- chat: 日常问候或聊天天（"你好""再见""谢谢"等）
-- kb: 需要基于知识库文档回答的问题（默认意图）
-- web: 需要联网搜索的实时信息（新闻、天气、股价等，优先级最高）
-- clarify: 问题模糊需要追问澄清
-
-规则：
-1. 如果用户问题包含代词（"它们""这些""其""他"等），请参考对话历史确定指代对象
-2. 如果用户提到"最近""今天""最新"等时间词，将模糊时间替换为具体日期
-3. web 优先级最高，其次是 clarify，默认 kb，chat 最低
-
-请以 JSON 格式输出：
-{{"intent": "kb", "rewritten_query": "重写后的查询", "entities": ["实体1", "实体2"]}}
-
-entities 是从 rewritten_query 中提取的关键实体列表（人名、地名、术语等）。
-
-当前时间：{current_time}
-知识库简介：{kb_description}
-
-对话历史：
-{history}
-
-用户问题：{question}"""
 
 CLARIFY_PROMPT = """用户的问题是模糊的，需要澄清。请生成一句友好的反问，引导用户提供更多信息。
 
@@ -158,9 +165,8 @@ REVIEW_PROMPT = """请审核以下回答的质量。评分标准（1-5分）：
 # ── Helpers ──
 
 def _build_context_block(state: AgentState) -> str:
-    """Build context block from retrieved docs or web results, with low-confidence warning and review feedback."""
-    intent = state["intent"]
-    context_block = state.get("web_results", "") if intent == "web" else state.get("retrieved_docs", "")
+    """Build context block from retrieved docs, with low-confidence warning and review feedback."""
+    context_block = state.get("retrieved_docs", "")
     confidence = state.get("kb_confidence", 0.0)
     if confidence < RERANK_LOW_THRESHOLD:
         context_block += "\n\n注意：以上内容的置信度极低，知识库中可能没有相关文档。"
@@ -186,113 +192,93 @@ def make_classify_intent_node(kb_index: KnowledgeBaseIndex, llm=None):
     if llm is None:
         llm = create_llm(temperature=0.1)
 
+    # Get or create module-level intent engine
+    tree, classifier, resolver = _get_intent_engine(llm)
+
     async def classify_intent(state: AgentState) -> dict:
         history = format_history(state.get("messages", []))
         kb_desc = kb_index.kb_id
-        prompt = INTENT_CLASSIFY_PROMPT.format(
-            current_time=state["current_time"],
-            kb_description=kb_desc,
-            history=history or "无",
-            question=state["question"],
-        )
-        logger.info("classifying intent via LLM… question=%.50s", state["question"])
-        response = await llm.ainvoke(prompt)
-        raw = response.content if hasattr(response, "content") else str(response)
-        parsed = parse_json_response(raw, state["question"])
 
-        intent = parsed.get("rewritten_query", "")
-        if not intent:
-            rl = raw.lower()
-            if "clarify" in rl:
-                intent = "clarify"
-            elif "chat" in rl:
-                intent = "chat"
-            elif "web" in rl:
-                intent = "web"
-            else:
-                intent = "kb"
-        else:
-            try:
-                extracted = json.loads(raw[raw.index("{"):raw.rindex("}")+1])
-                intent = extracted.get("intent", "kb")
-            except (ValueError, json.JSONDecodeError):
-                intent = "kb"
+        # Tree-based classification
+        scores = await classifier.classify(
+            question=state["question"],
+            history=history or "无",
+            kb_description=kb_desc,
+        )
+
+        intent = resolver.resolve_intent_kind(scores)
+        rewritten_query = resolver.resolve_rewrite_query(scores, state["question"])
+        entities = resolver.resolve_entities(scores)
+        leaf_id = resolver.resolve_leaf_id(scores)
 
         # 知识库为空时走纯聊天路径
         if intent == "kb" and not kb_index.chunk_texts:
             intent = "chat"
 
-        rewritten = parsed.get("rewritten_query", state["question"])
-        entities = []
-        try:
-            extracted = json.loads(raw[raw.index("{"):raw.rindex("}")+1])
-            entities = extracted.get("entities", [])
-        except (ValueError, json.JSONDecodeError):
-            pass
+        # Extract top score for logging
+        raw_intents = scores.get("intents", []) if isinstance(scores, dict) else scores
+        top_score = raw_intents[0].get("score", 0) if raw_intents else 0
 
-        logger.info("classify_intent question=%.50s intent=%s entities=%s", state["question"], intent, entities)
+        logger.info(
+            "classify_intent question=%.50s intent=%s leaf=%s top_score=%.2f entities=%s",
+            state["question"], intent, leaf_id,
+            top_score,
+            entities,
+        )
         return {
             "intent": intent,
-            "rewritten_query": rewritten,
+            "rewritten_query": rewritten_query,
             "query_entities": entities,
         }
 
     return classify_intent
 
 
+# ── Module-level retrieval engine (singleton) ──
+
+_retrieval_engine: MultiChannelEngine | None = None
+
+
+def _get_retrieval_engine() -> MultiChannelEngine:
+    global _retrieval_engine
+    if _retrieval_engine is None:
+        _retrieval_engine = MultiChannelEngine()
+    return _retrieval_engine
+
+
 def make_retrieve_kb_node(kb_index: KnowledgeBaseIndex):
+    engine = _get_retrieval_engine()
+
     async def retrieve_kb(state: AgentState) -> dict:
         query = state.get("rewritten_query") or state["question"]
         entities = state.get("query_entities", [])
 
-        dense_results = kb_index.dense_search(query, k=20)
-        bm25_results = kb_index.bm25_search(query, k=20)
-        graph_results = kb_index.graph_search(query, k=40, query_entities=entities)
-
-        fused = KnowledgeBaseIndex.rrf_fusion(dense_results, bm25_results, graph_results, k=60)
-        top_candidates = fused[:10]
-
-        if not top_candidates or not kb_index.chunk_texts:
-            logger.info("retrieve_kb no_results query=%.50s", query)
-            return {"retrieved_docs": "", "kb_confidence": -10.0}
-
-        doc_texts = [kb_index.chunk_texts[idx] for idx, _ in top_candidates]
-        doc_scores = [score for _, score in top_candidates]
-
-        reranked = kb_index.rerank(query, doc_texts, top_k=len(doc_texts))
-        max_score = reranked[0][1] if reranked else -10.0
-
-        # 记录完整候选池的分数范围，用于置信度归一化
-        pool_scores = [s for _, s in reranked]
-        pool_min = min(pool_scores) if pool_scores else -5.0
-        pool_max = max(pool_scores) if pool_scores else 5.0
-        pool_range = pool_max - pool_min
-
-        # 动态截断：保留分数 ≥ top-1 × 0.7 的证据，至少 1 条，至多 5 条
-        if reranked:
-            threshold = max_score * 0.7
-            selected = [reranked[0]]
-            for t, s in reranked[1:]:
-                if s >= threshold and len(selected) < 5:
-                    selected.append((t, s))
-            reranked = selected
-
-        logger.info(
-            "retrieve_kb query=%.50s dense=%d bm25=%d graph=%d top_score=%.3f pool_range=[%.2f, %.2f] evidences=%d",
-            query, len(dense_results), len(bm25_results), len(graph_results),
-            max_score, pool_min, pool_max, len(reranked),
+        context = SearchContext(
+            query=query,
+            entities=entities,
+            kb_index=kb_index,
+            top_k=10,
         )
+        chunks = await engine.retrieve(context)
 
+        if not chunks:
+            logger.info("retrieve_kb no_results query=%.50s", query)
+            return {"retrieved_docs": "", "kb_confidence": -10.0, "final_evidences": []}
+
+        # Format results for downstream nodes (synthesize / review)
         lines: list[str] = []
         final_evidences: list[dict] = []
-        for i, (text, score) in enumerate(reranked):
+        max_score = chunks[0][1] if chunks else -10.0
+        pool_min = min(s for _, s in chunks) if chunks else -5.0
+        pool_max = max(s for _, s in chunks) if chunks else 5.0
+        pool_range = pool_max - pool_min
+
+        for i, (idx, score) in enumerate(chunks):
+            text = kb_index.chunk_texts[idx] if idx < len(kb_index.chunk_texts) else ""
+            if not text:
+                continue
             lines.append(f"--- 文档片段 {i + 1} (score: {score:.4f}) ---\n{text}")
-            src_doc = ""
-            for idx, _ in top_candidates:
-                if kb_index.chunk_texts[idx] == text:
-                    src_doc = kb_index.chunk_metas[idx].get("filename", "")
-                    break
-            # min-max 归一化到完整候选池，让百分数体现"相对于所有候选的位置"
+            src_doc = kb_index.chunk_metas[idx].get("filename", "") if idx < len(kb_index.chunk_metas) else ""
             confidence_pct = round(((score - pool_min) / pool_range) * 100, 1) if pool_range > 0 else 100.0
             final_evidences.append({
                 "evidence": text[:500],
@@ -302,6 +288,10 @@ def make_retrieve_kb_node(kb_index: KnowledgeBaseIndex):
             })
 
         formatted = "\n\n".join(lines)
+        logger.info(
+            "retrieve_kb query=%.50s chunks=%d top_score=%.3f",
+            query, len(chunks), max_score,
+        )
 
         return {
             "retrieved_docs": formatted,
@@ -377,7 +367,7 @@ def make_self_review_node(llm=None):
         except (json.JSONDecodeError, KeyError):
             answer_text = state["final_answer"]
 
-        context = state.get("retrieved_docs", "") or state.get("web_results", "")
+        context = state.get("retrieved_docs", "")
         prompt = REVIEW_PROMPT.format(
             question=state["question"],
             answer=answer_text[:2000],
@@ -410,14 +400,12 @@ def make_self_review_node(llm=None):
 
 # ── Routing ──
 
-def route_by_intent(state: AgentState) -> Literal["ask_clarification", "chat_respond", "retrieve_kb", "tavily_search"]:
+def route_by_intent(state: AgentState) -> Literal["ask_clarification", "chat_respond", "retrieve_kb"]:
     intent = state.get("intent", "kb")
     if intent == "clarify":
         return "ask_clarification"
     if intent == "chat":
         return "chat_respond"
-    if intent == "web":
-        return "tavily_search"
     return "retrieve_kb"
 
 
@@ -440,17 +428,6 @@ def build_rag_graph(kb_index: KnowledgeBaseIndex, llm=None):
     retrieve_kb = make_retrieve_kb_node(kb_index)
     synthesize_answer = make_synthesize_answer_node(llm)
     self_review = make_self_review_node(llm)
-
-    async def tavily_search(state: AgentState) -> dict:
-        try:
-            from langchain_community.tools.tavily_search import TavilySearch
-            tool = TavilySearch(max_results=5, topic="general")
-            question = state.get("rewritten_query") or state["question"]
-            result = tool.invoke(question)
-            text = str(result)
-        except Exception:
-            text = "Web search unavailable."
-        return {"web_results": text}
 
     async def chat_respond(state: AgentState) -> dict:
         llm_local = create_llm(temperature=0.3)
@@ -530,14 +507,12 @@ def build_rag_graph(kb_index: KnowledgeBaseIndex, llm=None):
     builder.add_node("ask_clarification", ask_clarification)
     builder.add_node("chat_respond", chat_respond)
     builder.add_node("retrieve_kb", retrieve_kb)
-    builder.add_node("tavily_search", tavily_search)
     builder.add_node("synthesize_answer", synthesize_answer)
     builder.add_node("self_review", self_review)
 
     builder.add_edge(START, "classify_intent")
     builder.add_conditional_edges("classify_intent", route_by_intent)
     builder.add_edge("retrieve_kb", "synthesize_answer")
-    builder.add_edge("tavily_search", "synthesize_answer")
     builder.add_edge("synthesize_answer", "self_review")
     builder.add_edge("ask_clarification", "self_review")
     builder.add_conditional_edges("self_review", route_after_review)

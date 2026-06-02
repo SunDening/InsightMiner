@@ -28,6 +28,7 @@
 </template>
 
 <script>
+import { onMounted } from 'vue'
 import FileUploader from '@/components/FileUploader.vue'
 import { useChatStore } from '@/stores/chat'
 
@@ -52,6 +53,8 @@ export default {
     async function switchKb() {
       await store.switchKb(store.activeKbId)
     }
+
+    onMounted(fetchAll)
 
     return { store, handleUpload, remove, switchKb, fetchAll }
   },

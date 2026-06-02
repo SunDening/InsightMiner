@@ -1445,6 +1445,10 @@ header .tech-badges span {
     <span style="background:var(--color-rerank-bg, rgba(244,114,182,0.08));color:var(--color-rerank);border:1px solid rgba(244,114,182,0.2);">CrossEncoder</span>
     <span style="background:var(--color-llm-bg, rgba(251,191,36,0.08));color:var(--color-llm);border:1px solid rgba(251,191,36,0.2);">DeepSeek/Ollama</span>
     <span style="background:var(--color-memory-bg);color:var(--color-memory);border:1px solid rgba(236,72,153,0.2);">SQLite</span>
+    <span style="background:var(--color-graph-bg);color:var(--color-graph);border:1px solid rgba(168,85,247,0.2);">RabbitMQ</span>
+    <span style="background:var(--color-api-bg);color:var(--color-api);border:1px solid rgba(75,139,255,0.2);">Redis</span>
+    <span style="background:rgba(34,211,160,0.08);color:var(--color-fusion);border:1px solid rgba(34,211,160,0.2);">PostgreSQL</span>
+    <span style="background:rgba(244,114,182,0.08);color:var(--color-rerank);border:1px solid rgba(244,114,182,0.2);">Prometheus</span>
   </div>
 </header>
 
@@ -1482,7 +1486,7 @@ header .tech-badges span {
     </div>
     <span class="ov-arrow">→</span>
     <div class="ov-node" style="border-color:rgba(148,163,184,0.2);background:var(--bg-primary);">
-      <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-display);font-weight:500;">kb · web · chat · clarify</span>
+      <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-display);font-weight:500;">kb · chat · clarify</span>
     </div>
   </div>
 
@@ -1490,26 +1494,18 @@ header .tech-badges span {
   <div class="ov-path-label">— KB 主路径 —</div>
   <div class="ov-row">
     <div class="ov-node highlight-api">
-      <span class="ov-name">Dense</span>
-      <span class="ov-desc">ChromaDB · top-20</span>
-    </div>
-    <div class="ov-node highlight-bm25">
-      <span class="ov-name">BM25</span>
-      <span class="ov-desc">Keyword · top-20</span>
-    </div>
-    <div class="ov-node highlight-graph">
-      <span class="ov-name">Graph</span>
-      <span class="ov-desc">BFS · top-40</span>
+      <span class="ov-name">MultiChannel</span>
+      <span class="ov-desc">Dense · BM25 · Graph</span>
     </div>
     <span class="ov-arrow">⤵</span>
     <div class="ov-node highlight-fusion">
       <span class="ov-name">RRF</span>
-      <span class="ov-desc">k=60 · ~45 merged</span>
+      <span class="ov-desc">k=60 · RRF fusion</span>
     </div>
     <span class="ov-arrow">→</span>
     <div class="ov-node highlight-rerank">
-      <span class="ov-name">CrossEncoder</span>
-      <span class="ov-desc">10 → 3</span>
+      <span class="ov-name">PostProcess</span>
+      <span class="ov-desc">Dedup · Rerank</span>
     </div>
     <span class="ov-arrow">→</span>
     <div class="ov-node highlight-llm">
@@ -1523,27 +1519,46 @@ header .tech-badges span {
     </div>
   </div>
 
-  <!-- Row 3: Services -->
-  <div class="ov-path-label">— 基础设施服务 —</div>
+  <!-- Row 3: Middleware & Governance -->
+  <div class="ov-path-label">— 中间件 & 治理 —</div>
   <div class="ov-row">
+    <div class="ov-node" style="border-color:var(--border);background:var(--bg-card);">
+      <span class="ov-name">API Gateway</span>
+      <span class="ov-desc">限流 · 熔断 · 降级</span>
+    </div>
+    <span class="ov-arrow">|</span>
     <div class="ov-node highlight-memory">
-      <span class="ov-name">Memory</span>
-      <span class="ov-desc">SQLite · 会话持久化</span>
+      <span class="ov-name">Cache</span>
+      <span class="ov-desc">L1内存 + L2 Redis</span>
+    </div>
+    <span class="ov-arrow">|</span>
+    <div class="ov-node" style="border-color:var(--border);background:var(--bg-card);">
+      <span class="ov-name">Observability</span>
+      <span class="ov-desc">Trace · Metrics</span>
+    </div>
+  </div>
+
+  <!-- Row 4: Async Ingestion -->
+  <div class="ov-path-label">— 异步入库 —</div>
+  <div class="ov-row">
+    <div class="ov-node" style="border-color:rgba(168,85,247,0.2);background:rgba(168,85,247,0.06);">
+      <span class="ov-name" style="color:var(--color-graph);">RabbitMQ</span>
+      <span class="ov-desc">任务队列 · DLQ</span>
     </div>
     <span class="ov-arrow">→</span>
-    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
-      <span class="ov-name">KB Manager</span>
-      <span class="ov-desc">CRUD · 增量更新</span>
+    <div class="ov-node highlight-memory">
+      <span class="ov-name">Worker</span>
+      <span class="ov-desc">解析·分块·嵌入·索引</span>
     </div>
     <span class="ov-arrow">→</span>
-    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
-      <span class="ov-name">Document</span>
-      <span class="ov-desc">txt/pdf/docx · 分块</span>
+    <div class="ov-node" style="border-color:rgba(34,211,160,0.2);background:rgba(34,211,160,0.06);">
+      <span class="ov-name" style="color:var(--color-fusion);">PostgreSQL</span>
+      <span class="ov-desc">元数据 · 版本 · 审计</span>
     </div>
-    <span class="ov-arrow">→</span>
-    <div class="ov-node" style="border-color:rgba(148,163,184,0.15);">
-      <span class="ov-name">LLM Factory</span>
-      <span class="ov-desc">DeepSeek / Ollama</span>
+    <span class="ov-arrow">|</span>
+    <div class="ov-node highlight-api">
+      <span class="ov-name">Prometheus</span>
+      <span class="ov-desc">/metrics 端点</span>
     </div>
   </div>
 </div>
@@ -1637,8 +1652,19 @@ header .tech-badges span {
       </div>
       <div class="ac-body">
         <div class="p-row"><span class="p-lbl">Health</span><span class="p-val">GET /api/system/health</span></div>
-        <div class="p-row"><span class="p-lbl">Response</span><span class="p-val">{ "status": "ok" }</span></div>
-        <div class="p-row"><span class="p-lbl">Deps</span><span class="p-val">dependency_overrides injection</span></div>
+        <div class="p-row"><span class="p-lbl">Degradation</span><span class="p-val">GET/POST /api/system/degradation</span></div>
+        <div class="p-row"><span class="p-lbl">Metrics</span><span class="p-val">GET /metrics (Prometheus)</span></div>
+      </div>
+    </div>
+    <div class="api-card" style="border-left:3px solid var(--color-graph);">
+      <div class="ac-head">
+        <span>Ingestion</span>
+        <span class="ac-method method-post">POST</span>
+      </div>
+      <div class="ac-body">
+        <div class="p-row"><span class="p-lbl">Async upload</span><span class="p-val">POST .../documents/async → task_id</span></div>
+        <div class="p-row"><span class="p-lbl">Task status</span><span class="p-val">GET /api/knowledge-bases/tasks/{task_id}</span></div>
+        <div class="p-row"><span class="p-lbl">Queue</span><span class="p-val">RabbitMQ · Worker 后台消费</span></div>
       </div>
     </div>
   </div>
@@ -1654,8 +1680,11 @@ async def lifespan(app):
     <span class="hl-c"># 关闭时：持久化所有脏索引</span>
     kb_manager.shutdown()
 
-app = FastAPI(title=<span class="hl-s">"InsightMiner"</span>, version=<span class="hl-s">"0.1.0"</span>, lifespan=lifespan)
+app = FastAPI(title=<span class="hl-s">"InsightMiner"</span>, version=<span class="hl-s">"0.2.0"</span>, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[<span class="hl-s">"*"</span>])
+app.add_middleware(TraceMiddleware)         <span class="hl-c">// trace_id + 结构化日志</span>
+app.add_middleware(MetricsMiddleware)       <span class="hl-c">// Prometheus /metrics</span>
+rate_limit_middleware(app, rate_limiter)    <span class="hl-c">// Token Bucket 限流</span>
 app.include_router(kb_api.router)
 app.include_router(chat_api.router)</div>
 </div>
@@ -1688,15 +1717,14 @@ app.include_router(chat_api.router)</div>
 
   <div class="intent-grid">
     <div class="intent-card">
-      <div class="label intent">Intent</div>
+      <div class="label intent">Intent (Tree)</div>
       <div class="value">
-        四分类：<strong style="color:var(--color-api);">kb</strong>（默认）·
-        <span style="color:#94A3B8;">web</span> ·
+        树形分类：<strong style="color:var(--color-api);">kb</strong>（默认）·
         <span style="color:#94A3B8;">chat</span> ·
         <span style="color:#94A3B8;">clarify</span>
       </div>
       <div style="margin-top:8px;font-size:11px;color:var(--text-muted);font-family:var(--font-display);">
-        优先级: web &gt; clarify &gt; <strong>kb</strong> &gt; chat
+        可配置 YAML · 支持多级 domain/category/topic
       </div>
     </div>
     <div class="intent-card">
@@ -1712,16 +1740,19 @@ app.include_router(chat_api.router)</div>
       <div class="value">
         专有名词 · 人名/地名<br>
         技术术语 · 产品名<br>
-        仅 kb/web 意图有效
+        仅 kb 意图有效
       </div>
     </div>
   </div>
 
-  <div class="code-snip"><span class="hl-c">// One-shot LLM call — 同时完成三项任务</span>
+  <div class="code-snip"><span class="hl-c">// Tree-based LLM call — 返回重写 + 实体 + 意图打分</span>
 {
-  <span class="hl-k">"intent"</span>:          <span class="hl-s">"kb"</span>,
-  <span class="hl-k">"rewritten_query"</span>: <span class="hl-s">"知识库问答RAG系统 架构设计 2026"</span>,
-  <span class="hl-k">"entities"</span>:        [<span class="hl-s">"RAG"</span>, <span class="hl-s">"LangGraph"</span>, <span class="hl-s">"ChromaDB"</span>]
+  <span class="hl-k">"rewritten_query"</span>: <span class="hl-s">"LevelDB 数据流动 架构"</span>,
+  <span class="hl-k">"entities"</span>: [<span class="hl-s">"LevelDB"</span>],
+  <span class="hl-k">"intents"</span>: [
+    { <span class="hl-k">"id"</span>: <span class="hl-s">"kb-general"</span>, <span class="hl-k">"score"</span>: 0.92 },
+    { <span class="hl-k">"id"</span>: <span class="hl-s">"sys-greet"</span>, <span class="hl-k">"score"</span>: 0.05 }
+  ]
 }</div>
 </div>
 
@@ -1731,7 +1762,6 @@ app.include_router(chat_api.router)</div>
 
 <div class="branch-labels" style="display:flex;justify-content:center;gap:16px;padding:8px 0;flex-wrap:wrap;">
   <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:var(--color-api-bg);color:var(--color-api);border:1px solid rgba(75,139,255,0.2);">kb (default)</span>
-  <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:rgba(148,163,184,0.06);color:#94A3B8;border:1px solid rgba(148,163,184,0.12);">web</span>
   <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:rgba(148,163,184,0.06);color:#94A3B8;border:1px solid rgba(148,163,184,0.12);">chat</span>
   <span style="font-family:var(--font-display);font-size:11px;font-weight:700;padding:4px 14px;border-radius:var(--radius-tag);text-transform:uppercase;letter-spacing:0.6px;background:rgba(148,163,184,0.06);color:#94A3B8;border:1px solid rgba(148,163,184,0.12);">clarify</span>
 </div>
@@ -1744,8 +1774,8 @@ app.include_router(chat_api.router)</div>
   <div class="step-header">
     <div class="step-number">2</div>
     <div class="step-title">
-      Three-Way Parallel Retrieval
-      <small>三路并行检索</small>
+      MultiChannel Retrieval Engine
+      <small>三通道并行检索 · asyncio.gather</small>
     </div>
     <span class="tag tag-api" style="margin-left:auto;">asyncio.gather</span>
   </div>
@@ -2118,11 +2148,11 @@ app.include_router(chat_api.router)</div>
     <div class="detail-card" style="border-left:3px solid var(--color-memory);">
       <div class="dc-head">
         <span>Memory Service</span>
-        <span class="tag tag-memory tag-sm">SQLite</span>
+        <span class="tag tag-memory tag-sm">SQLite / PG</span>
       </div>
       <div class="dc-body">
-        <div class="p-row"><span class="p-lbl">Storage</span><span class="p-val">conversations.db</span></div>
-        <div class="p-row"><span class="p-lbl">Tables</span><span class="p-val">conversations + messages</span></div>
+        <div class="p-row"><span class="p-lbl">Storage</span><span class="p-val">conversations.db (SQLite)</span></div>
+        <div class="p-row"><span class="p-lbl">PG Store</span><span class="p-val">asyncpg: thread/message/kb/document</span></div>
         <div class="p-row"><span class="p-lbl">Thread ID</span><span class="p-val">UUID hex[:12]</span></div>
         <div class="p-row"><span class="p-lbl">History Limit</span><span class="p-val">20 messages per thread</span></div>
         <div class="p-row"><span class="p-lbl">Thread-KB</span><span class="p-val">kb_id binding</span></div>
@@ -2153,7 +2183,7 @@ app.include_router(chat_api.router)</div>
 <div class="section-title">
   <span class="sec-num">D</span>
   Alternative Paths
-  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— chat / clarify / web 分支</span>
+  <span style="font-size:13px;font-weight:400;color:var(--text-muted);font-family:var(--font-display);">— chat / clarify 分支</span>
 </div>
 
 <div class="step" style="padding:20px 28px;">
@@ -2176,11 +2206,19 @@ app.include_router(chat_api.router)</div>
     </div>
     <div class="side-path">
       <div class="sp-head">
-        <div class="sp-icon">W</div>
-        <span class="sp-name">Web Search</span>
+        <div class="sp-icon" style="background:rgba(34,211,160,0.1);color:var(--color-fusion);">$</div>
+        <span class="sp-name">Cache (缓存)</span>
       </div>
-      <div class="sp-desc">用户明确要求上网搜索时，调用 Tavily API 获取实时结果。</div>
-      <div class="sp-flow">Tavily search → SYNTHESIZE_PROMPT → answer</div>
+      <div class="sp-desc">相同问题直接返回缓存结果，跳过完整链路。L1 进程内存 + L2 Redis。</div>
+      <div class="sp-flow">question → sha256 → L1:TTLCache → L2:Redis → hit? return : full pipeline</div>
+    </div>
+    <div class="side-path">
+      <div class="sp-head">
+        <div class="sp-icon" style="background:rgba(168,85,247,0.1);color:var(--color-graph);">Q</div>
+        <span class="sp-name">Async Ingestion</span>
+      </div>
+      <div class="sp-desc">文档上传后通过 RabbitMQ 异步入库，不阻塞 API 响应。</div>
+      <div class="sp-flow">upload → RabbitMQ → Worker → parse → chunk → embed → index → PG</div>
     </div>
   </div>
 </div>
@@ -2262,6 +2300,36 @@ app.include_router(chat_api.router)</div>
           <td>RecursiveCharacterTextSplitter</td>
           <td>—</td>
           <td>chunk_size=512, chunk_overlap=64</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-graph);">Message Queue</td>
+          <td>RabbitMQ + aio-pika</td>
+          <td>4 / 9.6</td>
+          <td>Async ingestion pipeline · DLQ</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-api);">Cache</td>
+          <td>Redis + cachetools</td>
+          <td>8 / 5</td>
+          <td>L1 memory TTL · L2 Redis answer cache</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-fusion);">Metadata Store</td>
+          <td>PostgreSQL + asyncpg</td>
+          <td>16 / 0.31</td>
+          <td>KB/document/thread/message/audit schema</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-rerank);">API Gateway</td>
+          <td>RateLimiter + CircuitBreaker + Degradation</td>
+          <td>—</td>
+          <td>Token bucket · sliding window · 4-level degrade</td>
+        </tr>
+        <tr>
+          <td class="tt-layer" style="color:var(--color-llm);">Observability</td>
+          <td>Prometheus + structured logging</td>
+          <td>—</td>
+          <td>/metrics endpoint · trace_id per request</td>
         </tr>
       </tbody>
     </table>
@@ -2568,6 +2636,62 @@ initialize() → detect_changes()
       </div>
       <div class="adr-section" style="margin-bottom:0;">
         <div class="adr-text"><span class="hl-fusion">三层修复管线</span>：① json.loads 尝试 → ② _repair_json() 补引号、去尾部逗号 → ③ fallback 返回原始文本。加上字段模糊匹配（"evidence" → "evidences" 自动转换）和 setdefault 默认值。<span class="hl-fusion">解析成功率从 72% 提升到 96%</span>，剩余 4% 走 fallback，用户体验基本不受影响。</div>
+      </div>
+    </div>
+
+    <!-- ADR 8: MultiChannel + Cache -->
+    <div class="adr-card" style="border-left:3px solid var(--color-fusion);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-8</span>
+        多通道检索 + 多级缓存
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">原 retrieve_kb 内联执行 dense→BM25→graph→RRF→rerank，新增检索策略需改核心代码。缺乏缓存，每次请求走完整链路。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Solution</div>
+        <div class="adr-text"><span class="hl-fusion">MultiChannelEngine</span>：SearchChannel 接口化，Dense/BM25/Graph 各为实现，asyncio.gather 并行 → RRF → Dedup → Rerank。<span class="hl-fusion">AnswerCache</span>：L1 memory (cachetools) + L2 Redis，相同问题跳过检索。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Trade-offs</div>
+        <div class="adr-text">并行增加内存占用；RRF 对 top-k 参数敏感；缓存 TTL 在命中率与新鲜度之间平衡。</div>
+      </div>
+    </div>
+
+    <!-- ADR 9: RabbitMQ Async -->
+    <div class="adr-card" style="border-left:3px solid var(--color-graph);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-9</span>
+        RabbitMQ 异步入库
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">文档同步索引阻塞 API 响应，大文件导致超时（冷启动 ~40s/100 文件）。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Solution</div>
+        <div class="adr-text"><span class="hl-fusion">上传 → RabbitMQ → Worker</span>：API 返回 202 + task_id。Worker 独立进程消费队列执行 IngestionPipeline，死信队列处理失败重试。</div>
+      </div>
+      <div class="adr-section" style="margin-bottom:0;">
+        <div class="adr-label">Alternatives</div>
+        <div class="adr-text">Redis Stream（功能弱）；Celery（太重）；Kafka（大炮打蚊子）。</div>
+      </div>
+    </div>
+
+    <!-- ADR 10: Gateway -->
+    <div class="adr-card" style="border-left:3px solid var(--color-rerank);">
+      <div class="adr-title">
+        <span class="adr-num">ADR-10</span>
+        API Gateway 治理
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Context</div>
+        <div class="adr-text">无防护：LLM 超时打满、恶意请求耗尽资源、无降级机制。</div>
+      </div>
+      <div class="adr-section">
+        <div class="adr-label">Solution</div>
+        <div class="adr-text"><span class="hl-fusion">RateLimiter</span>：Token Bucket per-IP，60 req/min + burst 10。<span class="hl-fusion">CircuitBreaker</span>：60s 滑动窗口 5 次失败熔断。<span class="hl-fusion">Degradation</span>：4 级降级，API 动态调整。</div>
       </div>
     </div>
 

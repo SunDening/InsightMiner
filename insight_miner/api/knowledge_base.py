@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, UploadFile
+from fastapi import APIRouter, Depends, Query, UploadFile
 
 from insight_miner.models.schemas import DocumentItem, KnowledgeBase
 from insight_miner.services.kb_manager import KnowledgeBaseManager
@@ -71,20 +71,51 @@ async def upload_document(
     kb_id: str,
     file: UploadFile,
     kb_manager: Annotated[KnowledgeBaseManager, Depends(get_kb_manager)],
+    mode: str = Query("sync", pattern="^(sync|async)$"),
 ) -> DocumentItem:
     content = await file.read()
-    result = await kb_manager.upload_document(kb_id, file.filename or "upload", content)
+    if mode == "async":
+        result = await kb_manager.upload_document_async(kb_id, file.filename or "upload", content)
+    else:
+        result = await kb_manager.upload_document(kb_id, file.filename or "upload", content)
     if not result.get("success"):
         from fastapi import HTTPException
         detail = result.get("error", "Upload failed")
-        logger.warning("upload_document fail kb=%s file=%s error=%s", kb_id, file.filename, detail)
         raise HTTPException(status_code=400, detail=detail)
-    logger.info("upload_document kb=%s file=%s size=%d", kb_id, result["filename"], result["size_bytes"])
+    logger.info("upload_document kb=%s file=%s size=%d mode=%s", kb_id, result["filename"], result["size_bytes"], mode)
     return DocumentItem(
         filename=result["filename"],
         size_bytes=result["size_bytes"],
         status=result["status"],
     )
+
+
+@router.post("/{kb_id}/documents/async")
+async def upload_document_async(
+    kb_id: str,
+    file: UploadFile,
+    kb_manager: Annotated[KnowledgeBaseManager, Depends(get_kb_manager)],
+):
+    """Upload and return immediately with task_id."""
+    content = await file.read()
+    result = await kb_manager.upload_document_async(kb_id, file.filename or "upload", content)
+    if not result.get("success"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=result.get("error", "Upload failed"))
+    return result
+
+
+@router.get("/tasks/{task_id}")
+async def get_task_status(
+    task_id: str,
+    kb_manager: Annotated[KnowledgeBaseManager, Depends(get_kb_manager)],
+):
+    """Get the status of an async ingestion task."""
+    status = await kb_manager.get_task_status(task_id)
+    if status is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+    return status
 
 
 @router.delete("/{kb_id}/documents/{filename:path}")

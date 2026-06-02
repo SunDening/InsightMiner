@@ -1,0 +1,48 @@
+# InsightMiner 意图树配置
+# 树形结构：每个 key 是节点 ID，支持嵌套 children
+# kind: kb | chat | clarify | system
+# description: LLM 分类时使用的语义描述
+# examples: 示例问题，帮助 LLM 理解分类边界
+
+intent_tree:
+  # ── 系统交互（问候、关于助手等） ──
+  sys:
+    name: "系统交互"
+    kind: system
+    children:
+      sys-greet:
+        name: "问候与闲聊"
+        kind: chat
+        description: "用户打招呼、寒暄、道谢，不需要知识库查询"
+        examples:
+          - "你好"
+          - "hello"
+          - "早上好"
+          - "谢谢"
+          - "再见"
+      sys-about:
+        name: "关于助手"
+        kind: chat
+        description: "询问助手是谁、能做什么、有什么能力"
+        examples:
+          - "你是谁"
+          - "你能做什么"
+          - "你是什么模型"
+
+  # ── 知识库问答（默认） ──
+  kb-general:
+    name: "知识库问答"
+    kind: kb
+    description: "需要基于知识库文档来回答的业务问题"
+    examples:
+      - "xxx系统怎么使用？"
+      - "xxx流程是怎样的？"
+
+  # ── 追问澄清（问题模糊时） ──
+  clarify:
+    name: "追问澄清"
+    kind: clarify
+    description: "用户问题过于模糊、缺少关键信息，需要引导用户补充"
+    examples:
+      - "这个东西怎么用？"  # 缺少指代对象
+      - "帮我看看"           # 没有具体说明看什么

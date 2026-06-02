@@ -64,7 +64,7 @@ async def list_conversations(
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
     kb_id: str | None = None,
 ) -> list[ConversationSummary]:
-    threads = chat_service.list_threads(kb_id)
+    threads = await chat_service.list_threads(kb_id)
     logger.info("list_conversations kb=%s count=%d", kb_id, len(threads))
     return [ConversationSummary(**t) for t in threads]
 
@@ -74,7 +74,7 @@ async def get_conversation(
     thread_id: str,
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> list[MessageItem]:
-    messages = chat_service.get_history(thread_id)
+    messages = await chat_service.get_history(thread_id)
     logger.info("get_conversation thread=%s messages=%d", thread_id, len(messages))
     return [MessageItem(**m) for m in messages]
 
@@ -84,6 +84,6 @@ async def delete_conversation(
     thread_id: str,
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ):
-    chat_service.delete_thread(thread_id)
+    await chat_service.delete_thread(thread_id)
     logger.info("delete_conversation thread=%s", thread_id)
     return {"ok": True}

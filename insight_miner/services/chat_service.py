@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 from langchain_core.messages import HumanMessage
 
+from insight_miner.core.cache import AnswerCache
 from insight_miner.core.rag_engine import build_rag_graph
 from insight_miner.models.schemas import ChatResponse, EvidenceItem
 from insight_miner.services.kb_manager import KnowledgeBaseManager
@@ -35,27 +37,28 @@ class ChatService:
         self._kb_manager = kb_manager
         self._memory = memory
         self._graphs: dict[str, object] = {}
+        self._cache = AnswerCache()
 
-    def _get_or_create_graph(self, kb_id: str):
+    async def _get_or_create_graph(self, kb_id: str):
         if kb_id not in self._graphs:
-            idx = self._kb_manager.get_index(kb_id)
+            idx = await self._kb_manager.get_index(kb_id)
             graph = build_rag_graph(idx)
             self._graphs[kb_id] = graph
         return self._graphs[kb_id]
 
-    def _ensure_thread(self, thread_id: str | None, kb_id: str) -> str:
+    async def _ensure_thread(self, thread_id: str | None, kb_id: str) -> str:
         if not thread_id:
             thread_id = uuid.uuid4().hex[:12]
-        created = self._memory.create_thread(thread_id, kb_id)
+        created = await self._memory.create_thread(thread_id, kb_id)
         if not created:
-            existing_kb = self._memory.get_thread_kb_id(thread_id)
+            existing_kb = await self._memory.get_thread_kb_id(thread_id)
             if existing_kb != kb_id:
                 thread_id = uuid.uuid4().hex[:12]
-                self._memory.create_thread(thread_id, kb_id)
+                await self._memory.create_thread(thread_id, kb_id)
         return thread_id
 
-    def _build_lc_history(self, thread_id: str):
-        msgs = self._memory.get_history(thread_id, limit=20)
+    async def _build_lc_history(self, thread_id: str):
+        msgs = await self._memory.get_history(thread_id, limit=20)
         lc = []
         for m in msgs:
             if m["role"] == "user":
@@ -74,12 +77,32 @@ class ChatService:
         thread_id: str | None = None,
         kb_id: str = "default",
     ) -> ChatResponse:
-        thread_id = self._ensure_thread(thread_id, kb_id)
-        self._memory.save_message(thread_id, "user", question)
+        thread_id = await self._ensure_thread(thread_id, kb_id)
+        await self._memory.save_message(thread_id, "user", question)
         logger.info("chat thread=%s kb=%s question=%.50s", thread_id, kb_id, question)
 
+        # Cache lookup
+        cached = await self._cache.get(kb_id, question)
+        if cached is not None:
+            logger.info("cache hit thread=%s kb=%s", thread_id, kb_id)
+            answer_text = cached.get("answer", "")
+            rewritten_query = cached.get("rewritten_query", "")
+            raw_evidences = cached.get("evidences", [])
+            intent = cached.get("intent", "kb")
+            kb_confidence = cached.get("kb_confidence", 0.0)
+            evidences = self._format_evidences(raw_evidences, kb_confidence)
+            await self._memory.save_message(thread_id, "assistant", answer_text)
+            return ChatResponse(
+                answer=answer_text,
+                thread_id=thread_id,
+                rewritten_query=rewritten_query,
+                evidences=evidences[:5],
+                kb_confidence=kb_confidence,
+                intent=intent,
+            )
+
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        graph = self._get_or_create_graph(kb_id)
+        graph = await self._get_or_create_graph(kb_id)
 
         input_state = {
             "question": question,
@@ -88,7 +111,6 @@ class ChatService:
             "rewritten_query": "",
             "retrieved_docs": "",
             "kb_confidence": 0.0,
-            "web_results": "",
             "query_entities": [],
             "final_answer": "",
             "review_count": 0,
@@ -146,7 +168,18 @@ class ChatService:
                         except (IndexError, ValueError):
                             pass
 
-        self._memory.save_message(thread_id, "assistant", answer_text)
+        await self._memory.save_message(thread_id, "assistant", answer_text)
+
+        # Cache the result for future requests
+        cache_data = {
+            "answer": answer_text,
+            "rewritten_query": rewritten_query,
+            "evidences": [ev.model_dump() for ev in evidences[:5]],
+            "kb_confidence": kb_confidence,
+            "intent": result.get("intent", "kb"),
+        }
+        asyncio.ensure_future(self._cache.set(kb_id, question, cache_data))
+        logger.info("chat cached thread=%s kb=%s", thread_id, kb_id)
 
         return ChatResponse(
             answer=answer_text,
@@ -157,6 +190,30 @@ class ChatService:
             intent=result.get("intent", "kb"),
         )
 
+    # ── Format evidences from raw data ──
+
+    def _format_evidences(
+        self,
+        raw_evidences: list[dict],
+        kb_confidence: float,
+    ) -> list[EvidenceItem]:
+        evidences: list[EvidenceItem] = []
+        for ev in raw_evidences:
+            score = float(ev.get("score", 0.0))
+            content = ev.get("evidence", ev.get("content", ""))
+            if isinstance(content, list):
+                content = " ".join(str(c) for c in content)
+            source = ev.get("source_document", ev.get("source", ""))
+            confidence_pct = float(ev.get("confidence_pct", _score_to_pct(score)))
+            evidences.append(EvidenceItem(
+                content=str(content)[:1000],
+                score=score,
+                confidence_pct=confidence_pct,
+                source_document=str(source),
+                chunk_index=ev.get("chunk_index", 0),
+            ))
+        return evidences
+
     # ── Streaming chat (SSE via LangGraph astream_events) ──
 
     async def stream_chat(
@@ -165,17 +222,17 @@ class ChatService:
         thread_id: str | None = None,
         kb_id: str = "default",
     ) -> AsyncGenerator[str, None]:
-        thread_id = self._ensure_thread(thread_id, kb_id)
-        self._memory.save_message(thread_id, "user", question)
+        thread_id = await self._ensure_thread(thread_id, kb_id)
+        await self._memory.save_message(thread_id, "user", question)
         logger.info("stream_chat thread=%s kb=%s question=%.50s", thread_id, kb_id, question)
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        graph = self._get_or_create_graph(kb_id)
+        graph = await self._get_or_create_graph(kb_id)
 
         # 1. thread_id
         yield _sse("thread_id", {"thread_id": thread_id})
 
         # Build conversation history
-        lc_msgs = self._build_lc_history(thread_id)
+        lc_msgs = await self._build_lc_history(thread_id)
 
         # 2. Run graph with astream_events
         input_state = {
@@ -257,15 +314,15 @@ class ChatService:
         if not error_occurred:
             yield _sse("done", {"rewritten_query": ""})
             if full_answer:
-                self._memory.save_message(thread_id, "assistant", full_answer)
+                await self._memory.save_message(thread_id, "assistant", full_answer)
 
     # ── History ──
 
-    def get_history(self, thread_id: str) -> list[dict]:
-        return self._memory.get_history(thread_id)
+    async def get_history(self, thread_id: str) -> list[dict]:
+        return await self._memory.get_history(thread_id)
 
-    def list_threads(self, kb_id: str | None = None) -> list[dict]:
-        return self._memory.list_threads(kb_id)
+    async def list_threads(self, kb_id: str | None = None) -> list[dict]:
+        return await self._memory.list_threads(kb_id)
 
-    def delete_thread(self, thread_id: str):
-        self._memory.delete_thread(thread_id)
+    async def delete_thread(self, thread_id: str):
+        await self._memory.delete_thread(thread_id)
