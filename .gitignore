@@ -1,6 +1,18 @@
-# Ignore everything at root level
-/*
-!.gitignore
-!RAG/
-!kb_rag/
-!show/
+# Runtime data
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
