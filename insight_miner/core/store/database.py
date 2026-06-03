@@ -120,6 +120,28 @@ class DatabasePool:
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
+                CREATE TABLE IF NOT EXISTS users (
+                    id          SERIAL PRIMARY KEY,
+                    username    TEXT NOT NULL UNIQUE,
+                    email       TEXT NOT NULL UNIQUE,
+                    password    TEXT NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS verification_codes (
+                    id          SERIAL PRIMARY KEY,
+                    email       TEXT NOT NULL,
+                    code        TEXT NOT NULL,
+                    purpose     TEXT NOT NULL DEFAULT 'login',
+                    expires_at  TIMESTAMPTZ NOT NULL,
+                    used        BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_verification_email ON verification_codes(email, purpose);
+                CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
                 CREATE TABLE IF NOT EXISTS chunk_embedding (
                     chunk_id    TEXT PRIMARY KEY,
                     kb_id       TEXT NOT NULL,

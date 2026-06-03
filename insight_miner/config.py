@@ -69,6 +69,20 @@ CACHE_TTL_SHORT = 120       # L1 memory TTL (seconds)
 CACHE_TTL_LONG = 3600       # L2 Redis TTL (seconds)
 CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
 
+# ── Email ─────────────────────────────────────────────────────────────
+
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.qq.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "465"))
+EMAIL_USER = os.getenv("EMAIL_USER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "")
+
+# ── JWT ───────────────────────────────────────────────────────────────
+
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "72"))
+
 # Retrieval
 DENSE_TOP_K = 20
 BM25_TOP_K = 20

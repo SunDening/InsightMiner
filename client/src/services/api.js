@@ -2,6 +2,28 @@ import axios from 'axios'
 
 const http = axios.create({ baseURL: '/api' })
 
+// Attach Bearer token if available
+http.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// Handle 401 globally
+http.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      window.location.hash = '#/login'
+    }
+    return Promise.reject(err)
+  },
+)
+
 // ── Knowledge Base API ──
 
 export function listKBs() {
@@ -94,6 +116,28 @@ export function getThreadMessages(threadId) {
 
 export function deleteThread(threadId) {
   return http.delete(`/chat/history/${threadId}`).then(r => r.data)
+}
+
+// ── Auth API ──
+
+export function register(data) {
+  return http.post('/auth/register', data).then(r => r.data)
+}
+
+export function login(data) {
+  return http.post('/auth/login', data).then(r => r.data)
+}
+
+export function sendCode(email) {
+  return http.post('/auth/send-code', { email }).then(r => r.data)
+}
+
+export function loginWithCode(data) {
+  return http.post('/auth/login-with-code', data).then(r => r.data)
+}
+
+export function getMe() {
+  return http.get('/auth/me').then(r => r.data)
 }
 
 // ── Mind Map API ──

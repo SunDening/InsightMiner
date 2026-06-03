@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from insight_miner.api import chat as chat_api
 from insight_miner.api import knowledge_base as kb_api
+from insight_miner.api import auth as auth_api
 from insight_miner.config import setup_logging
 from insight_miner.core.gateway import DegradationManager, RateLimiter, rate_limit_middleware
 from insight_miner.core.observability import MetricsMiddleware, TraceMiddleware
@@ -99,6 +100,7 @@ rate_limit_middleware(app, rate_limiter)
 
 app.include_router(kb_api.router)
 app.include_router(chat_api.router)
+app.include_router(auth_api.router)
 
 
 @app.get("/api/system/health")
