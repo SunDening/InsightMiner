@@ -13,6 +13,7 @@ from insight_miner.models.schemas import (
     ChatResponse,
     ConversationSummary,
     MessageItem,
+    MindMapResponse,
 )
 from insight_miner.services.chat_service import ChatService
 
@@ -57,6 +58,25 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/{thread_id}/mindmap")
+async def generate_mindmap(
+    thread_id: str,
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+) -> MindMapResponse:
+    logger.info("mindmap thread=%s", thread_id)
+    try:
+        data = await chat_service.generate_mindmap(thread_id)
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return MindMapResponse(**data)
+    except Exception as e:
+        logger.error("mindmap pydantic validation error: %s | data=%.200s", e, str(data))
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=f"Mind map data validation failed: {e}")
 
 
 @router.get("/history")

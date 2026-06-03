@@ -1,6 +1,6 @@
 <template>
   <div class="main-content">
-    <div class="chat-section" :class="{ 'has-evidence': panelEvidences.length > 0 }">
+    <div class="chat-section" :class="{ 'has-evidence': panelEvidences.length > 0 && !evidenceCollapsed }">
 
       <!-- Chat header -->
       <div class="chat-header">
@@ -14,7 +14,12 @@
       <div class="chat-messages" ref="msgList">
 
         <template v-for="(msg, i) in store.messages" :key="i">
-          <MessageBubble :role="msg.role" :content="msg.content" :intent="msg.intent" />
+          <MessageBubble
+            :role="msg.role"
+            :content="msg.content"
+            :intent="msg.intent"
+            :threadId="store.activeThreadId"
+          />
         </template>
 
         <MessageBubble
@@ -22,7 +27,9 @@
           role="assistant"
           :content="store.streamingText"
           streaming
-          :intent="store.currentIntent" />
+          :intent="store.currentIntent"
+          :threadId="store.activeThreadId"
+        />
 
         <div v-if="store.error" class="empty-state">
           <p style="color:var(--color-error);font-size:var(--fs-body-sm);">{{ store.error }}</p>
@@ -54,8 +61,15 @@
     </div>
 
     <!-- Evidence panel -->
-    <div class="evidence-section" v-if="panelEvidences.length > 0">
-      <EvidencePanel :evidences="panelEvidences" />
+    <div class="evidence-section" v-if="panelEvidences.length > 0" :class="{ collapsed: evidenceCollapsed }">
+      <!-- Toggle bar (always visible when panel exists) -->
+      <div class="evidence-toggle" @click="evidenceCollapsed = !evidenceCollapsed">
+        <span class="toggle-icon">{{ evidenceCollapsed ? '▶' : '▼' }}</span>
+        <span class="toggle-text">引用证据</span>
+        <span class="toggle-count">{{ panelEvidences.length }} 条</span>
+      </div>
+      <!-- Collapsible content -->
+      <EvidencePanel v-show="!evidenceCollapsed" :evidences="panelEvidences" />
     </div>
   </div>
 </template>
@@ -73,6 +87,7 @@ export default {
     const input = ref('')
     const msgList = ref(null)
     const inputEl = ref(null)
+    const evidenceCollapsed = ref(false)
 
     const panelEvidences = computed(() => {
       if (store.currentEvidences.length) return store.currentEvidences
@@ -102,7 +117,58 @@ export default {
       { flush: 'post' }
     )
 
-    return { store, input, send, msgList, inputEl, panelEvidences }
+    return { store, input, send, msgList, inputEl, panelEvidences, evidenceCollapsed }
   },
 }
 </script>
+
+<style scoped>
+.evidence-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  border-bottom: 1px solid var(--color-hairline, #eee);
+}
+
+.evidence-toggle:hover {
+  background: rgba(86, 69, 212, 0.05);
+}
+
+.toggle-icon {
+  font-size: 10px;
+  color: var(--color-text-secondary, #888);
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.toggle-text {
+  font-weight: 600;
+  font-size: var(--fs-body, 14px);
+  color: var(--color-text, #333);
+}
+
+.toggle-count {
+  font-size: 12px;
+  color: var(--color-text-secondary, #888);
+  background: var(--color-surface, #f0f0f0);
+  padding: 0 8px;
+  border-radius: 10px;
+  line-height: 20px;
+  margin-left: auto;
+}
+
+/* 折叠时面板缩小到仅显示 toggle 栏 */
+.evidence-section.collapsed {
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.evidence-section.collapsed .evidence-toggle {
+  border-bottom: none;
+}
+</style>

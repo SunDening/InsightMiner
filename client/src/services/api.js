@@ -95,3 +95,9 @@ export function getThreadMessages(threadId) {
 export function deleteThread(threadId) {
   return http.delete(`/chat/history/${threadId}`).then(r => r.data)
 }
+
+// ── Mind Map API ──
+
+export function generateMindmap(threadId) {
+  return http.post(`/chat/${threadId}/mindmap`).then(r => r.data)
+}

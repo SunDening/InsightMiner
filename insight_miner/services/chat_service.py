@@ -316,6 +316,108 @@ class ChatService:
             if full_answer:
                 await self._memory.save_message(thread_id, "assistant", full_answer)
 
+    # ── Mind Map ──
+
+    async def generate_mindmap(self, thread_id: str) -> dict:
+        """Use LLM to turn the last assistant answer into a mind-map tree JSON."""
+        messages = await self._memory.get_history(thread_id)
+        logger.info("generate_mindmap thread=%s total_messages=%d", thread_id, len(messages))
+        if messages:
+            logger.info("generate_mindmap roles=%s", [m["role"] for m in messages])
+        assistant_msgs = [m for m in messages if m["role"] == "assistant"]
+        if not assistant_msgs:
+            roles_found = {m["role"] for m in messages} if messages else "none"
+            raise ValueError(
+                f"No assistant messages found in thread {thread_id} "
+                f"(total={len(messages)}, roles={roles_found})"
+            )
+
+        last_answer = assistant_msgs[-1]["content"]
+
+        from insight_miner.core.llm_factory import create_llm
+
+        logger.info("generate_mindmap step=creating_llm last_answer_len=%d", len(last_answer))
+        llm = create_llm(temperature=0.3)
+
+        logger.info("generate_mindmap step=invoking_llm")
+        from langchain_core.messages import SystemMessage, HumanMessage
+        messages = [
+            SystemMessage(content="""你是一个思维导图专家。将用户的回答提炼为层级清晰的思维导图 JSON。
+
+仅输出合法的 JSON，不要包含说明文字或 markdown 代码块：
+
+{
+  "root": {
+    "content": "主题（≤10字）",
+    "children": [
+      {
+        "content": "分支",
+        "children": [
+          { "content": "子节点" }
+        ]
+      }
+    ]
+  }
+}
+
+规则：
+1. 根节点概括核心主题（≤10字）
+2. 第一层分支 3-7 个要点（≤10字）
+3. 最大嵌套 3 层
+4. 所有节点用精炼短语，不要用句子
+5. 输出语言：回答是中文就用中文，是英文就用英文
+6. 仅输出 JSON，不要其他文字"""),
+            HumanMessage(content=f"回答内容：\n\n{last_answer}\n\n请生成思维导图 JSON："),
+        ]
+        result = await llm.ainvoke(messages)
+
+        logger.info("generate_mindmap step=processing_result")
+        raw = result.content.strip()
+        # Strip possible markdown code fences
+        if raw.startswith("```"):
+            first_nl = raw.find("\n")
+            if first_nl != -1:
+                raw = raw[first_nl + 1:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+
+        import json
+        from insight_miner.utils.helpers import extract_json, repair_json
+
+        logger.info("generate_mindmap raw_llm_output=%.200s", raw)
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            extracted = extract_json(raw)
+            if extracted:
+                try:
+                    data = json.loads(extracted)
+                except json.JSONDecodeError:
+                    repaired = repair_json(extracted)
+                    if repaired:
+                        data = json.loads(repaired)
+                    else:
+                        raise
+            else:
+                repaired = repair_json(raw)
+                if repaired:
+                    data = json.loads(repaired)
+                else:
+                    raise
+
+        # markmap 要求每个节点必须有 children（空数组也⾏，不能是 None）
+        def _fill_children(n: dict):
+            if n.get("children") is None:
+                n["children"] = []
+            else:
+                for c in n["children"]:
+                    _fill_children(c)
+
+        _fill_children(data.get("root", data))
+        return data
+
     # ── History ──
 
     async def get_history(self, thread_id: str) -> list[dict]:

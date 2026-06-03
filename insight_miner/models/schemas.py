@@ -59,3 +59,14 @@ class MessageItem(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     timestamp: datetime | None = None
+
+
+# ── Mind Map ──
+
+class MindMapNode(BaseModel):
+    content: str = Field(description="节点内容")
+    children: list[MindMapNode] | None = Field(default=None, description="子节点列表")
+
+
+class MindMapResponse(BaseModel):
+    root: MindMapNode

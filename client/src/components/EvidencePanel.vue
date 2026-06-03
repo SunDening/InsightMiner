@@ -1,9 +1,5 @@
 <template>
-  <div v-if="evidences.length">
-    <div class="evidence-header">
-      <h3>引用证据</h3>
-      <span class="count">{{ evidences.length }} 条</span>
-    </div>
+  <div v-if="evidences.length" class="evidence-panel-inner">
     <div class="evidence-cards">
       <div class="evidence-card" v-for="(ev, i) in evidences" :key="i">
         <div class="source">
